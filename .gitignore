@@ -28,8 +28,10 @@ env/
 # (keep migrations/ but ignore local overrides)
 
 # IDE
-.vscode/
 .idea/
+# keep .vscode/settings.json for interpreter config but ignore personal settings
+.vscode/*
+!.vscode/settings.json
 *.swp
 *.swo
 .DS_Store

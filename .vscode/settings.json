@@ -1,0 +1,4 @@
+{
+  "python.defaultInterpreterPath": "/home/zoro/anaconda3/envs/robinhoodtrader/bin/python",
+  "python.analysis.extraPaths": ["/home/zoro/Repos/m-np/RobinhoodTrader"]
+}
