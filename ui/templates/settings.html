@@ -1,0 +1,267 @@
+{% extends "base.html" %}
+{% block title %}Settings — Agentic trader{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Settings</h1>
+    <p class="page-sub">All changes save immediately.</p>
+  </div>
+</div>
+
+<!-- Asset classes -->
+<div class="settings-card">
+  <div class="settings-card-title">Asset classes</div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Stocks / equities</span>
+      <span class="knob-desc">US listed equities, ETFs</span>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="knob-asset_stocks" onchange="saveKnob('asset_stocks', this.checked)">
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Crypto</span>
+      <span class="knob-desc">Bitcoin, Ethereum, and other digital assets</span>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="knob-asset_crypto" onchange="saveKnob('asset_crypto', this.checked)">
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Options</span>
+      <span class="knob-desc">Calls and puts on equities</span>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="knob-asset_options" onchange="saveKnob('asset_options', this.checked)">
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Futures</span>
+      <span class="knob-desc">Commodity and index futures contracts</span>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="knob-asset_futures" onchange="saveKnob('asset_futures', this.checked)">
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Event contracts</span>
+      <span class="knob-desc">Prediction market contracts</span>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="knob-asset_events" onchange="saveKnob('asset_events', this.checked)">
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+</div>
+
+<!-- Approval gates -->
+<div class="settings-card">
+  <div class="settings-card-title">Human approval gates</div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Approval threshold</span>
+      <span class="knob-desc">Trades above this always notify you</span>
+    </div>
+    <div class="knob-right">
+      <span id="thresh-display">$500</span>
+      <input type="range" id="knob-approval_threshold_usd" min="0" max="5000" step="50"
+             oninput="document.getElementById('thresh-display').textContent = parseInt(this.value) === 0 ? 'Always ask' : '$'+parseInt(this.value).toLocaleString()"
+             onchange="saveKnob('approval_threshold_usd', parseInt(this.value))">
+    </div>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">New position opens</span>
+      <span class="knob-desc">Agent buys a stock not already held</span>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="knob-gate_new_positions" onchange="saveKnob('gate_new_positions', this.checked)">
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Full position exits</span>
+      <span class="knob-desc">Agent sells an entire holding</span>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="knob-gate_full_exits" onchange="saveKnob('gate_full_exits', this.checked)">
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Rebalance trades</span>
+      <span class="knob-desc">Routine portfolio weight adjustments</span>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="knob-gate_rebalance" onchange="saveKnob('gate_rebalance', this.checked)">
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Stop-loss triggers</span>
+      <span class="knob-desc">Automatic sells to limit downside</span>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="knob-gate_stop_loss" onchange="saveKnob('gate_stop_loss', this.checked)">
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Approval timeout</span>
+      <span class="knob-desc">Cancel order if no response within</span>
+    </div>
+    <div class="seg-control" id="seg-timeout">
+      <button class="seg-btn" data-value="5" onclick="setSeg('approval_timeout_minutes', 5, this)">5 min</button>
+      <button class="seg-btn active" data-value="10" onclick="setSeg('approval_timeout_minutes', 10, this)">10 min</button>
+      <button class="seg-btn" data-value="30" onclick="setSeg('approval_timeout_minutes', 30, this)">30 min</button>
+    </div>
+  </div>
+</div>
+
+<!-- Guardrail limits -->
+<div class="settings-card">
+  <div class="settings-card-title">Guardrail limits</div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Max position size</span>
+      <span class="knob-desc">Max % of portfolio in one stock</span>
+    </div>
+    <div class="knob-right">
+      <span id="pos-display">20%</span>
+      <input type="range" id="knob-max_position_pct" min="5" max="50" step="5"
+             oninput="document.getElementById('pos-display').textContent = this.value+'%'"
+             onchange="saveKnob('max_position_pct', parseInt(this.value))">
+    </div>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Max trades per day</span>
+      <span class="knob-desc">Hard cap on daily order count</span>
+    </div>
+    <div class="knob-right">
+      <span id="trades-display">5</span>
+      <input type="range" id="knob-max_trades_per_day" min="1" max="20" step="1"
+             oninput="document.getElementById('trades-display').textContent = this.value"
+             onchange="saveKnob('max_trades_per_day', parseInt(this.value))">
+    </div>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Daily loss halt</span>
+      <span class="knob-desc">Pause trading if down more than X% today</span>
+    </div>
+    <div class="knob-right">
+      <span id="loss-display">3.0%</span>
+      <input type="range" id="knob-daily_loss_halt_pct" min="1" max="15" step="0.5"
+             oninput="document.getElementById('loss-display').textContent = parseFloat(this.value).toFixed(1)+'%'"
+             onchange="saveKnob('daily_loss_halt_pct', parseFloat(this.value))">
+    </div>
+  </div>
+</div>
+
+<!-- Reports -->
+<div class="settings-card">
+  <div class="settings-card-title">Summary reports</div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Frequency</span>
+      <span class="knob-desc">Triggers at 4 PM ET after market close</span>
+    </div>
+    <div class="seg-control" id="seg-freq">
+      <button class="seg-btn" data-value="daily" onclick="setSeg('report_frequency','daily',this)">Daily</button>
+      <button class="seg-btn active" data-value="weekly" onclick="setSeg('report_frequency','weekly',this)">Weekly</button>
+      <button class="seg-btn" data-value="both" onclick="setSeg('report_frequency','both',this)">Both</button>
+      <button class="seg-btn" data-value="off" onclick="setSeg('report_frequency','off',this)">Off</button>
+    </div>
+  </div>
+
+  <div class="knob-row" id="weekly-day-row">
+    <div class="knob-label">
+      <span class="knob-name">Weekly day</span>
+      <span class="knob-desc">After market close on this day</span>
+    </div>
+    <div class="seg-control" id="seg-day">
+      <button class="seg-btn" data-value="Monday" onclick="setSeg('report_weekly_day','Monday',this)">Mon</button>
+      <button class="seg-btn" data-value="Tuesday" onclick="setSeg('report_weekly_day','Tuesday',this)">Tue</button>
+      <button class="seg-btn" data-value="Wednesday" onclick="setSeg('report_weekly_day','Wednesday',this)">Wed</button>
+      <button class="seg-btn" data-value="Thursday" onclick="setSeg('report_weekly_day','Thursday',this)">Thu</button>
+      <button class="seg-btn active" data-value="Friday" onclick="setSeg('report_weekly_day','Friday',this)">Fri</button>
+    </div>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Delivery</span>
+      <span class="knob-desc">Where the summary gets sent</span>
+    </div>
+    <div class="seg-control" id="seg-delivery">
+      <button class="seg-btn active" data-value="email" onclick="setSeg('report_delivery','email',this)">Email</button>
+      <button class="seg-btn" data-value="sms" onclick="setSeg('report_delivery','sms',this)">SMS</button>
+      <button class="seg-btn" data-value="both" onclick="setSeg('report_delivery','both',this)">Both</button>
+    </div>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Depth</span>
+      <span class="knob-desc">How much detail Claude writes</span>
+    </div>
+    <div class="seg-control" id="seg-depth">
+      <button class="seg-btn active" data-value="brief" onclick="setSeg('report_depth','brief',this)">Brief</button>
+      <button class="seg-btn" data-value="full" onclick="setSeg('report_depth','full',this)">Full</button>
+      <button class="seg-btn" data-value="deep" onclick="setSeg('report_depth','deep',this)">Deep analysis</button>
+    </div>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Include trade rationale</span>
+      <span class="knob-desc">Claude explains each decision</span>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="knob-report_include_rationale" onchange="saveKnob('report_include_rationale', this.checked)">
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Include P&amp;L breakdown</span>
+      <span class="knob-desc">Per-position and overall figures</span>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="knob-report_include_pnl" onchange="saveKnob('report_include_pnl', this.checked)">
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+</div>
+{% endblock %}

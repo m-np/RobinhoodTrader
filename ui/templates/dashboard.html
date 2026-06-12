@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Agentic trader{% endblock %}
+
+{% block content %}
+<!-- Metric cards -->
+<div class="metrics-row">
+  <div class="metric-card">
+    <div class="metric-label">Agentic wallet</div>
+    <div class="metric-value" id="m-wallet">—</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">Today's P&amp;L</div>
+    <div class="metric-value" id="m-pnl">—</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">Total return</div>
+    <div class="metric-value" id="m-return">—</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">Trades today</div>
+    <div class="metric-value" id="m-trades">—</div>
+  </div>
+</div>
+
+<!-- Two-column layout -->
+<div class="two-col">
+  <!-- Main feed -->
+  <div>
+    <!-- Portfolio holdings -->
+    <section class="section">
+      <div class="section-header">
+        <span class="section-title">Portfolio</span>
+        <span class="section-note">Isolated from your main Robinhood account</span>
+      </div>
+      <div class="card" id="portfolio-table">
+        <p style="color:var(--text-3);font-size:13px">Loading...</p>
+      </div>
+    </section>
+
+    <!-- Live signals -->
+    <section class="section">
+      <div class="section-header">
+        <span class="section-title">Live signals</span>
+        <button class="btn-sm" onclick="refreshSignals()">Refresh</button>
+      </div>
+      <div id="signals-feed">
+        <p style="color:var(--text-3);font-size:13px;padding:12px 0">Loading...</p>
+      </div>
+    </section>
+
+    <!-- Last report -->
+    <section class="section">
+      <div class="section-header">
+        <span class="section-title">Last report</span>
+        <span class="section-note" id="report-date">—</span>
+      </div>
+      <div class="card" id="report-card">
+        <div class="report-top">
+          <div>
+            <div class="card-title" id="report-title">—</div>
+            <div class="card-sub" id="report-sub">—</div>
+          </div>
+          <span class="badge badge-green" id="report-pnl">—</span>
+        </div>
+        <p class="report-body" id="report-body">No reports yet. Reports are generated after market close.</p>
+        <button class="btn-sm" onclick="requestFullReport()">Full report</button>
+      </div>
+    </section>
+  </div>
+
+  <!-- Sidebar -->
+  <div>
+    <!-- Watchlist widget -->
+    <div class="sidebar-section">
+      <div class="section-header">
+        <span class="section-title">Watchlist</span>
+        <button class="btn-sm" onclick="showAddWatch()">+ Add</button>
+      </div>
+      <div class="inline-form" id="add-watch-form" style="display:none">
+        <input type="text" id="new-ticker" placeholder="Ticker (e.g. AAPL)" maxlength="10">
+        <input type="text" id="new-notes" placeholder="Notes (optional)">
+        <button class="btn-primary btn-sm" onclick="addToWatchlist()">Add</button>
+        <button class="btn-sm" onclick="document.getElementById('add-watch-form').style.display='none'">Cancel</button>
+      </div>
+      <div class="card" id="watchlist-widget">
+        <p style="color:var(--text-3);font-size:12px">Loading...</p>
+      </div>
+    </div>
+
+    <!-- Blocklist widget -->
+    <div class="sidebar-section">
+      <div class="section-header">
+        <span class="section-title">Never buy</span>
+        <button class="btn-sm" onclick="promptAddBlock()">+ Add</button>
+      </div>
+      <div class="card">
+        <div class="pill-list" id="blocklist-widget">
+          <p style="color:var(--text-3);font-size:12px">Loading...</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mirrors widget -->
+    <div class="sidebar-section">
+      <div class="section-header">
+        <span class="section-title">Portfolio mirrors</span>
+        <a href="/mirrors" style="font-size:12px;color:var(--blue);text-decoration:none">Manage</a>
+      </div>
+      <div id="mirrors-widget">
+        <p style="color:var(--text-3);font-size:12px">Loading...</p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadMirrors() {
+  try {
+    const res = await fetch('/api/mirrors');
+    const mirrors = await res.json();
+    const widget = document.getElementById('mirrors-widget');
+    if (!widget) return;
+    const enabled = mirrors.filter(m => m.enabled);
+    if (enabled.length === 0) {
+      widget.innerHTML = '<p style="color:var(--text-3);font-size:12px;padding:4px 0">No mirrors enabled. <a href="/mirrors" style="color:var(--blue)">Set up mirrors →</a></p>';
+      return;
+    }
+    widget.innerHTML = enabled.map(m => `
+      <div class="mirror-card">
+        <div class="mirror-header">
+          <div class="avatar">${initials(m.name)}</div>
+          <div style="flex:1">
+            <div class="mirror-name">${m.name}</div>
+            <div class="mirror-meta">${m.source_type === 'congressional' ? 'Congress' : 'Institution'} · ${(m.scale_factor*100).toFixed(1)}% scale</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" checked onchange="toggleMirror('${m.slug}', this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="mirror-last" id="mirror-last-${m.slug}">${m.last_checked_at ? 'Last: '+formatDate(m.last_checked_at) : 'Not yet checked'}</div>
+      </div>
+    `).join('');
+  } catch(e) { console.error('loadMirrors:', e); }
+}
+</script>
+{% endblock %}

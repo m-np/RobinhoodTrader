@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Agentic trader{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="topbar-left">
+        <span class="appname">⚡ Agentic trader</span>
+        <nav class="nav">
+          <a href="/" class="nav-link {% if active == 'dashboard' %}active{% endif %}">Dashboard</a>
+          <a href="/watchlist" class="nav-link {% if active == 'watchlist' %}active{% endif %}">Watchlist</a>
+          <a href="/mirrors" class="nav-link {% if active == 'mirrors' %}active{% endif %}">Mirrors</a>
+          <a href="/settings" class="nav-link {% if active == 'settings' %}active{% endif %}">Settings</a>
+        </nav>
+      </div>
+      <div class="topbar-right">
+        <span class="status-dot" id="status-dot"></span>
+        <span class="status-text" id="status-text">Connecting...</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="wallet-banner" id="wallet-banner" style="display:none">
+    <span>⚠ Agentic wallet is empty — agent is paused. Fund your Robinhood agentic account to begin trading.</span>
+    <button onclick="document.getElementById('wallet-banner').style.display='none'">Dismiss</button>
+  </div>
+
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="/static/app.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
