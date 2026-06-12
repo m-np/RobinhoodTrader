@@ -1,4 +1,7 @@
+import base64
+import hashlib
 import json
+import secrets
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -313,44 +316,104 @@ async def api_last_report(db: Session = Depends(get_db)):
     }
 
 
-# ── Robinhood OAuth + token management ───────────────────────────────────────
+# ── Robinhood OAuth — PKCE + Dynamic Client Registration ─────────────────────
+#
+# Robinhood's MCP uses standard OAuth 2.0 with:
+#   - Dynamic Client Registration (RFC 7591) — no pre-registered app needed
+#   - PKCE (RFC 7636) — no client_secret required (public client)
+#   - Authorization: https://robinhood.com/oauth
+#   - Token exchange: https://api.robinhood.com/oauth2/token/
+#   - Registration: https://agent.robinhood.com/oauth/trading/register
 
-_AUTHORIZE_URL = "https://agent.robinhood.com/oauth/authorize"
-_TOKEN_URL = "https://agent.robinhood.com/oauth/token"
+_REGISTER_URL = "https://agent.robinhood.com/oauth/trading/register"
+_AUTHORIZE_URL = "https://robinhood.com/oauth"
+_TOKEN_URL = "https://api.robinhood.com/oauth2/token/"
+
+# In-memory store for PKCE state — keyed by `state` param, short-lived
+_pkce_pending: dict[str, dict] = {}
+
+
+def _pkce_pair() -> tuple[str, str]:
+    """Generate PKCE code_verifier and code_challenge (S256)."""
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+    digest = hashlib.sha256(verifier.encode()).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return verifier, challenge
+
+
+def _get_or_register_client_id(db: Session) -> str:
+    """
+    Returns the client_id registered with Robinhood.
+    Registers dynamically on first call and caches the result in config_knobs.
+    """
+    row = db.query(ConfigKnob).filter(ConfigKnob.key == "robinhood_client_id").first()
+    if row:
+        return json.loads(row.value)
+
+    resp = httpx.post(
+        _REGISTER_URL,
+        json={
+            "redirect_uris": [settings.ROBINHOOD_REDIRECT_URI],
+            "client_name": "RobinhoodTrader",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    client_id = resp.json()["client_id"]
+    set_knob("robinhood_client_id", client_id)
+    return client_id
 
 
 @router.get("/auth/robinhood")
-async def auth_robinhood():
-    """Redirect to Robinhood OAuth consent page."""
-    if not settings.ROBINHOOD_CLIENT_ID:
-        raise HTTPException(
-            status_code=501,
-            detail=(
-                "ROBINHOOD_CLIENT_ID is not configured. "
-                "Use POST /api/robinhood/token to set tokens manually."
-            ),
-        )
+async def auth_robinhood(db: Session = Depends(get_db)):
+    """
+    Starts the Robinhood OAuth flow.
+    Dynamically registers this app if not already registered,
+    then redirects to Robinhood's consent page with PKCE.
+    """
+    try:
+        client_id = _get_or_register_client_id(db)
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Client registration failed: {e}") from e
+
+    verifier, challenge = _pkce_pair()
+    state = secrets.token_urlsafe(16)
+    _pkce_pending[state] = {"verifier": verifier, "client_id": client_id}
+
     params = {
         "response_type": "code",
-        "client_id": settings.ROBINHOOD_CLIENT_ID,
+        "client_id": client_id,
         "redirect_uri": settings.ROBINHOOD_REDIRECT_URI,
-        "scope": "trading",
+        "scope": "internal",
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": state,
     }
     return RedirectResponse(url=f"{_AUTHORIZE_URL}?{urlencode(params)}")
 
 
 @router.get("/auth/robinhood/callback")
-async def auth_robinhood_callback(code: str, db: Session = Depends(get_db)):
-    """Exchange the OAuth code for tokens and save them encrypted."""
+async def auth_robinhood_callback(code: str, state: str, db: Session = Depends(get_db)):
+    """
+    Receives the OAuth callback code, exchanges it for tokens using PKCE,
+    saves them encrypted, and redirects to the dashboard.
+    """
+    pkce = _pkce_pending.pop(state, None)
+    if not pkce:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state. Try connecting again.")
+
     try:
         resp = httpx.post(
             _TOKEN_URL,
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "client_id": settings.ROBINHOOD_CLIENT_ID,
-                "client_secret": settings.ROBINHOOD_CLIENT_SECRET,
+                "client_id": pkce["client_id"],
                 "redirect_uri": settings.ROBINHOOD_REDIRECT_URI,
+                "code_verifier": pkce["verifier"],
             },
             timeout=15,
         )
@@ -362,9 +425,9 @@ async def auth_robinhood_callback(code: str, db: Session = Depends(get_db)):
             detail=f"Token exchange failed ({e.response.status_code}): {e.response.text}",
         ) from e
     except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"Token exchange request error: {e}") from e
+        raise HTTPException(status_code=502, detail=f"Token exchange error: {e}") from e
 
-    expires_at = datetime.utcnow() + timedelta(seconds=int(data.get("expires_in", 3600)))
+    expires_at = datetime.utcnow() + timedelta(seconds=int(data.get("expires_in", 86400)))
     save_tokens(db, data["access_token"], data.get("refresh_token", ""), expires_at)
     return RedirectResponse(url="/?connected=true")
 
@@ -372,12 +435,12 @@ async def auth_robinhood_callback(code: str, db: Session = Depends(get_db)):
 class ManualTokenInput(BaseModel):
     access_token: str
     refresh_token: str = ""
-    expires_at: Optional[str] = None  # ISO datetime string; defaults to 24 h from now
+    expires_at: Optional[str] = None  # ISO datetime; defaults to 24 h from now
 
 
 @router.post("/api/robinhood/token")
 async def set_manual_token(body: ManualTokenInput, db: Session = Depends(get_db)):
-    """Paste tokens obtained via the Robinhood CLI auth flow."""
+    """Fallback: paste tokens obtained externally."""
     if body.expires_at:
         try:
             expires_at = datetime.fromisoformat(body.expires_at)
@@ -392,7 +455,7 @@ async def set_manual_token(body: ManualTokenInput, db: Session = Depends(get_db)
 
 @router.get("/api/robinhood/status")
 async def robinhood_status(db: Session = Depends(get_db)):
-    """Returns connection status — used by the dashboard banner."""
+    """Connection status for the dashboard banner."""
     tokens = get_tokens(db)
     if tokens is None:
         return {"connected": False, "expires_at": None, "account_id": None}

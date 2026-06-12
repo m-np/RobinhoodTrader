@@ -419,10 +419,19 @@ class TestRobinhoodAuth:
         })
         assert r.status_code == 400
 
-    def test_auth_robinhood_redirect_without_client_id(self, client):
-        # Without ROBINHOOD_CLIENT_ID configured, should return 501
-        r = client.get("/auth/robinhood", follow_redirects=False)
-        assert r.status_code == 501
+    def test_auth_robinhood_initiates_pkce_redirect(self, client):
+        # Dynamic registration + PKCE redirect — mock the registration HTTP call
+        from unittest.mock import MagicMock, patch
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"client_id": "test-dynamic-client-id"}
+        mock_resp.raise_for_status = lambda: None
+        with patch("api.routes.httpx.post", return_value=mock_resp):
+            r = client.get("/auth/robinhood", follow_redirects=False)
+        assert r.status_code in (302, 307)
+        location = r.headers.get("location", "")
+        assert "robinhood.com/oauth" in location
+        assert "code_challenge" in location
+        assert "state" in location
 
     def test_tokens_survive_re_save(self, client):
         """Upsert — saving again must not create a second row."""
