@@ -1,3 +1,14 @@
+"""
+Robinhood MCP client — Streamable HTTP transport.
+
+Correct tool names discovered from Robinhood's live tools/list:
+  get_accounts, get_portfolio, get_equity_positions, get_equity_quotes,
+  get_equity_orders, place_equity_order, cancel_equity_order,
+  review_equity_order, get_equity_tradability, search, ...
+
+Always uses the agentic account (agentic_allowed=True) — never the
+main brokerage account.
+"""
 import json
 import logging
 import threading
@@ -17,24 +28,15 @@ class McpConnectionError(Exception):
 
 
 class RobinhoodMCPClient:
-    """
-    Connects to Robinhood's MCP server via Streamable HTTP transport.
-
-    Flow per MCP spec:
-      1. initialize  → server returns Mcp-Session-Id header
-      2. notifications/initialized  → fire-and-forget
-      3. tools/call  → include Mcp-Session-Id on every request
-      4. Reinitialize if session expires (404) or token refreshes (401)
-    """
-
     def __init__(self):
         self._url = settings.ROBINHOOD_MCP_URL
         self._tm = get_token_manager()
         self._seq = 0
         self._session_id: str | None = None
-        self._lock = threading.Lock()
+        self._session_lock = threading.Lock()
+        self._agentic_account: str | None = None
 
-    # ── Internal helpers ──────────────────────────────────────────────────────
+    # ── Transport ─────────────────────────────────────────────────────────────
 
     def _next_id(self) -> int:
         self._seq += 1
@@ -53,7 +55,7 @@ class RobinhoodMCPClient:
     def _ensure_session(self, token: str) -> None:
         if self._session_id:
             return
-        with self._lock:
+        with self._session_lock:
             if self._session_id:
                 return
             self._init_session(token)
@@ -69,28 +71,22 @@ class RobinhoodMCPClient:
             },
             "id": self._next_id(),
         }
-        try:
-            resp = httpx.post(
-                self._url,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-            sid = resp.headers.get("Mcp-Session-Id")
-            if sid:
-                self._session_id = sid
-                logger.info("MCP session: %s…", sid[:12])
-            # Send initialized notification (fire-and-forget)
-            self._notify_initialized(token)
-        except httpx.HTTPError as e:
-            raise McpConnectionError(f"MCP session init failed: {e}") from e
-
-    def _notify_initialized(self, token: str) -> None:
+        resp = httpx.post(
+            self._url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        sid = resp.headers.get("Mcp-Session-Id")
+        if sid:
+            self._session_id = sid
+            logger.info("MCP session: %s…", sid[:12])
+        # Fire-and-forget initialized notification
         try:
             h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             if self._session_id:
@@ -102,23 +98,23 @@ class RobinhoodMCPClient:
                 timeout=10,
             )
         except Exception:
-            pass  # notifications don't need to succeed
+            pass
 
-    def _call(self, tool_name: str, arguments: dict | None = None) -> dict:
-        arguments = arguments or {}
-        logger.info("MCP → %s %s", tool_name, arguments.get("symbol", arguments.get("ticker", "")))
+    def _call(self, tool: str, args: dict | None = None) -> dict:
+        args = args or {}
+        logger.info("MCP → %s", tool)
         try:
             token = self._tm.get_access_token()
         except McpAuthError as e:
             raise McpConnectionError(str(e)) from e
         self._ensure_session(token)
-        return self._do_call(tool_name, arguments, token, retry=True)
+        return self._do_call(tool, args, token, retry=True)
 
-    def _do_call(self, tool_name: str, arguments: dict, token: str, retry: bool) -> dict:
+    def _do_call(self, tool: str, args: dict, token: str, retry: bool) -> dict:
         payload = {
             "jsonrpc": "2.0",
             "method": "tools/call",
-            "params": {"name": tool_name, "arguments": arguments},
+            "params": {"name": tool, "arguments": args},
             "id": self._next_id(),
         }
         try:
@@ -128,123 +124,178 @@ class RobinhoodMCPClient:
                 headers=self._headers(token),
                 timeout=30,
             )
-
-            # Token expired — refresh and retry once
             if resp.status_code == 401 and retry:
-                logger.warning("MCP 401 on %s — refreshing token", tool_name)
-                try:
-                    token = self._tm.force_refresh()
-                    self._session_id = None
-                    self._ensure_session(token)
-                    return self._do_call(tool_name, arguments, token, retry=False)
-                except McpAuthError as e:
-                    raise McpConnectionError(f"Token refresh failed: {e}") from e
-
-            # Session expired — reinit and retry once
-            if resp.status_code in (404, 410) and retry:
-                logger.warning("MCP session expired (%s) — reinitializing", resp.status_code)
+                logger.warning("MCP 401 — refreshing token")
+                token = self._tm.force_refresh()
                 self._session_id = None
                 self._ensure_session(token)
-                return self._do_call(tool_name, arguments, token, retry=False)
+                return self._do_call(tool, args, token, retry=False)
+
+            if resp.status_code in (404, 410) and retry:
+                logger.warning("MCP session expired — reinitializing")
+                self._session_id = None
+                self._ensure_session(token)
+                return self._do_call(tool, args, token, retry=False)
 
             resp.raise_for_status()
 
-            # Parse: JSON or SSE stream
             ct = resp.headers.get("content-type", "")
-            data = self._parse_sse(resp.text) if "event-stream" in ct else resp.json()
+            data = _parse_sse(resp.text) if "event-stream" in ct else resp.json()
 
             if "error" in data:
                 err = data["error"]
                 raise McpConnectionError(
-                    f"MCP error {err.get('code', '?')}: {err.get('message', str(err))}"
+                    f"MCP {err.get('code','?')}: {err.get('message', str(err))}"
                 )
 
-            return self._unwrap(data.get("result", {}))
+            return _unwrap(data.get("result", {}))
 
         except McpConnectionError:
             raise
         except httpx.HTTPStatusError as e:
-            logger.error("MCP HTTP %s [%s]: %s", e.response.status_code, tool_name, e.response.text[:300])
-            raise McpConnectionError(f"HTTP {e.response.status_code}: {e.response.text[:200]}") from e
+            logger.error("MCP HTTP %s [%s]: %s", e.response.status_code, tool, e.response.text[:200])
+            raise McpConnectionError(f"HTTP {e.response.status_code}") from e
         except httpx.RequestError as e:
-            logger.error("MCP request error [%s]: %s", tool_name, e)
             raise McpConnectionError(str(e)) from e
         except Exception as e:
-            logger.error("MCP unexpected error [%s]: %s", tool_name, e)
+            logger.error("MCP unexpected [%s]: %s", tool, e)
             raise McpConnectionError(str(e)) from e
 
-    @staticmethod
-    def _parse_sse(text: str) -> dict:
-        """Extract the first JSON data event from an SSE stream."""
-        for line in text.splitlines():
-            if line.startswith("data:"):
-                try:
-                    return json.loads(line[5:].strip())
-                except json.JSONDecodeError:
-                    pass
-        return {}
+    # ── Account resolution ────────────────────────────────────────────────────
 
-    @staticmethod
-    def _unwrap(result: dict) -> dict:
-        """MCP tool results wrap the payload in content[].text as JSON."""
-        content = result.get("content")
-        if isinstance(content, list):
-            for item in content:
-                if item.get("type") == "text":
-                    try:
-                        return json.loads(item["text"])
-                    except (json.JSONDecodeError, KeyError):
-                        return {"text": item.get("text", "")}
-        return result
+    def _get_agentic_account(self) -> str:
+        """
+        Returns the agentic account number (agentic_allowed=True).
+        Cached in memory and persisted to config_knobs across restarts.
+        """
+        if self._agentic_account:
+            return self._agentic_account
+
+        # Try cached DB value first
+        from agent.guardrails import get_knob, set_knob
+        cached = get_knob("robinhood_agentic_account")
+        if cached:
+            self._agentic_account = str(cached)
+            return self._agentic_account
+
+        # Fetch from Robinhood
+        result = self._call("get_accounts")
+        accounts = result.get("data", {}).get("accounts", [])
+        agentic = next(
+            (a for a in accounts if a.get("agentic_allowed")),
+            None,
+        )
+        if not agentic:
+            raise McpConnectionError(
+                "No agentic account found on this Robinhood profile. "
+                "Enable agentic trading in the Robinhood app first."
+            )
+        acct_num = str(agentic["account_number"])
+        set_knob("robinhood_agentic_account", acct_num)
+        self._agentic_account = acct_num
+        logger.info("Agentic account resolved: •••%s", acct_num[-4:])
+        return acct_num
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def get_portfolio(self) -> dict:
+        """Holdings, cash, total value, and P&L from the agentic account."""
         try:
-            r = self._call("get_portfolio")
+            acct = self._get_agentic_account()
+            port = self._call("get_portfolio", {"account_number": acct})
+            pos_result = self._call("get_equity_positions", {"account_number": acct})
+
+            data = port.get("data", {})
+            total_value = _f(data.get("total_value", 0)) or 0.0
+            cash = _f(data.get("cash", 0)) or 0.0
+            buying_power = _f(
+                data.get("buying_power", {}).get("buying_power", cash)
+            ) or 0.0
+
+            positions = pos_result.get("data", {}).get("positions", [])
             holdings = []
-            total_value = float(r.get("total_equity", r.get("total_value", 0)) or 0)
-            for h in r.get("holdings", r.get("positions", [])):
-                equity = float(h.get("equity", h.get("market_value", 0)) or 0)
-                cost = float(h.get("cost_basis", h.get("average_buy_price", 0)) or 0)
-                pnl = equity - cost
-                pct = (equity / total_value * 100) if total_value > 0 else 0
+            symbols = [p.get("symbol", "") for p in positions if p.get("symbol")]
+
+            # Fetch live quotes for all held positions in one call
+            quotes = {}
+            if symbols:
+                q_result = self._call("get_equity_quotes", {"symbols": symbols})
+                for item in q_result.get("data", {}).get("results", []):
+                    q = item.get("quote", {})
+                    sym = q.get("symbol", "")
+                    price = _f(q.get("last_trade_price")) or _f(q.get("last_non_reg_trade_price"))
+                    prev = _f(q.get("adjusted_previous_close")) or _f(q.get("previous_close"))
+                    quotes[sym] = {"price": price, "prev_close": prev}
+
+            for pos in positions:
+                sym = pos.get("symbol", "")
+                qty = _f(pos.get("quantity", 0)) or 0.0
+                avg_cost = _f(pos.get("average_buy_price", 0)) or 0.0
+                q = quotes.get(sym, {})
+                price = q.get("price") or avg_cost
+                market_val = price * qty
+                cost_basis = avg_cost * qty
+                pnl = market_val - cost_basis
+                pct_portfolio = (market_val / total_value * 100) if total_value > 0 else 0.0
                 holdings.append({
-                    "ticker": h.get("symbol", h.get("ticker", "")),
-                    "quantity": float(h.get("quantity", 0) or 0),
-                    "market_value": equity,
-                    "cost_basis": cost,
+                    "ticker": sym,
+                    "quantity": qty,
+                    "market_value": market_val,
+                    "cost_basis": cost_basis,
                     "pnl": pnl,
-                    "pnl_pct": (pnl / cost * 100) if cost > 0 else 0,
-                    "pct_of_portfolio": pct,
+                    "pnl_pct": (pnl / cost_basis * 100) if cost_basis > 0 else 0.0,
+                    "pct_of_portfolio": pct_portfolio,
+                    "current_price": price,
+                    "avg_cost": avg_cost,
                 })
+
             return {
                 "holdings": holdings,
-                "cash": float(r.get("cash", r.get("buying_power", 0)) or 0),
+                "cash": cash,
+                "buying_power": buying_power,
                 "total_value": total_value,
-                "today_pnl": float(r.get("today_pnl", r.get("intraday_pnl", 0)) or 0),
-                "total_return_pct": float(r.get("total_return_pct", r.get("percent_change", 0)) or 0),
+                "equity_value": _f(data.get("equity_value", 0)) or 0.0,
+                "today_pnl": 0.0,      # Robinhood doesn't expose this per-day
+                "total_return_pct": 0.0,
             }
         except McpConnectionError:
-            return {"holdings": [], "cash": 0.0, "total_value": 0.0, "today_pnl": 0.0, "total_return_pct": 0.0}
+            return {
+                "holdings": [], "cash": 0.0, "buying_power": 0.0,
+                "total_value": 0.0, "equity_value": 0.0,
+                "today_pnl": 0.0, "total_return_pct": 0.0,
+            }
 
     def get_wallet_balance(self) -> float:
+        """Buying power from the agentic account."""
         try:
-            r = self._call("get_buying_power")
-            val = r.get("buying_power", r.get("cash", r.get("amount", 0)))
-            return float(val or 0)
+            acct = self._get_agentic_account()
+            result = self._call("get_portfolio", {"account_number": acct})
+            data = result.get("data", {})
+            bp = data.get("buying_power", {}).get("buying_power")
+            if bp is not None:
+                return float(bp)
+            return _f(data.get("cash", 0)) or 0.0
         except McpConnectionError:
             return 0.0
 
     def get_quote(self, ticker: str) -> dict:
+        """Live price and daily change % for a ticker."""
         try:
-            r = self._call("get_quote", {"symbol": ticker})
+            result = self._call("get_equity_quotes", {"symbols": [ticker.upper()]})
+            items = result.get("data", {}).get("results", [])
+            if not items:
+                return {"ticker": ticker, "price": None, "change_pct": None}
+            q = items[0].get("quote", {})
+            price = _f(q.get("last_trade_price")) or _f(q.get("last_non_reg_trade_price"))
+            prev = _f(q.get("adjusted_previous_close")) or _f(q.get("previous_close"))
+            change_pct = ((price - prev) / prev * 100) if price and prev and prev != 0 else None
             return {
                 "ticker": ticker,
-                "price": _f(r.get("price", r.get("last_trade_price"))),
-                "change_pct": _f(r.get("change_pct", r.get("percent_change"))),
-                "volume": r.get("volume"),
-                "market_cap": r.get("market_cap"),
+                "price": price,
+                "change_pct": round(change_pct, 2) if change_pct is not None else None,
+                "bid": _f(q.get("bid_price")),
+                "ask": _f(q.get("ask_price")),
+                "prev_close": prev,
             }
         except McpConnectionError:
             return {"ticker": ticker, "price": None, "change_pct": None}
@@ -254,42 +305,79 @@ class RobinhoodMCPClient:
         ticker: str,
         action: str,
         quantity: float,
-        asset_class: str,
+        asset_class: str = "stock",
         order_type: str = "market",
     ) -> dict:
-        return self._call("place_order", {
-            "symbol": ticker,
-            "side": action,
+        acct = self._get_agentic_account()
+        return self._call("place_equity_order", {
+            "account_number": acct,
+            "symbol": ticker.upper(),
+            "side": action,       # "buy" | "sell"
+            "type": order_type,   # "market" | "limit"
             "quantity": quantity,
-            "asset_type": asset_class,
-            "order_type": order_type,
+            "time_in_force": "gfd",
         })
 
     def cancel_order(self, order_id: str) -> dict:
-        return self._call("cancel_order", {"order_id": order_id})
+        acct = self._get_agentic_account()
+        return self._call("cancel_equity_order", {
+            "account_number": acct,
+            "order_id": order_id,
+        })
 
     def get_order_history(self, limit: int = 20) -> list:
         try:
-            r = self._call("get_order_history", {"limit": limit})
-            return r.get("orders", r.get("results", [])) if isinstance(r, dict) else []
+            acct = self._get_agentic_account()
+            result = self._call("get_equity_orders", {"account_number": acct})
+            return result.get("data", {}).get("orders", [])
         except McpConnectionError:
             return []
 
     def analyze_concentration(self) -> dict:
+        """Use get_portfolio as a proxy — no dedicated concentration tool."""
         try:
-            return self._call("analyze_concentration")
+            return self.get_portfolio()
         except McpConnectionError:
             return {}
 
     def read_analyst_notes(self, ticker: str) -> dict:
+        """Search for analyst information via the search tool."""
         try:
-            return self._call("read_analyst_notes", {"symbol": ticker})
+            return self._call("search", {"query": ticker, "asset_type": "equity", "limit": 3})
         except McpConnectionError:
             return {}
 
 
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _parse_sse(text: str) -> dict:
+    """Extract the first JSON data: event from an SSE stream."""
+    for line in text.splitlines():
+        if line.startswith("data:"):
+            try:
+                return json.loads(line[5:].strip())
+            except json.JSONDecodeError:
+                pass
+    return {}
+
+
+def _unwrap(result: dict) -> dict:
+    """MCP tool results wrap the payload in content[].text as JSON."""
+    # Prefer structuredContent when available (already parsed)
+    if "structuredContent" in result:
+        return result["structuredContent"]
+    content = result.get("content", [])
+    for item in content:
+        if item.get("type") == "text":
+            try:
+                return json.loads(item["text"])
+            except (json.JSONDecodeError, KeyError):
+                return {"text": item.get("text", "")}
+    return result
+
+
 def _f(val) -> float | None:
-    """Safe float conversion — returns None if val is None."""
+    """Null-safe float conversion — Robinhood returns prices as strings."""
     if val is None:
         return None
     try:

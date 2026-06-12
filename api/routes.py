@@ -14,13 +14,13 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from agent.guardrails import get_knob, set_knob
+from agent.guardrails import set_knob
 from agent.mcp_client import RobinhoodMCPClient
 from api.deps import get_db
 from config import settings
 from db.models import (
     Alert, Blocklist, ConfigKnob, MirrorSource,
-    Report, RobinhoodToken, Trade, Watchlist,
+    Report, Trade, Watchlist,
     get_tokens, save_tokens,
 )
 
@@ -456,11 +456,13 @@ async def set_manual_token(body: ManualTokenInput, db: Session = Depends(get_db)
 @router.get("/api/robinhood/status")
 async def robinhood_status(db: Session = Depends(get_db)):
     """Connection status for the dashboard banner."""
+    from agent.guardrails import get_knob
     tokens = get_tokens(db)
     if tokens is None:
         return {"connected": False, "expires_at": None, "account_id": None}
+    acct = get_knob("robinhood_agentic_account")
     return {
         "connected": True,
         "expires_at": tokens["expires_at"].isoformat() if tokens["expires_at"] else None,
-        "account_id": None,
+        "account_id": f"•••{str(acct)[-4:]}" if acct else None,
     }
