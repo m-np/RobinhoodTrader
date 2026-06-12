@@ -68,7 +68,7 @@ The Robinhood agentic account is **completely isolated** from your main Robinhoo
 
 ## Prerequisites
 
-- Python 3.11+
+- [Anaconda](https://www.anaconda.com/download) or Miniconda (recommended) — or Python 3.11+ with pip
 - PostgreSQL 14+ (local or hosted, e.g. Railway, Supabase, Neon)
 - [Anthropic API key](https://console.anthropic.com)
 - [Robinhood account](https://robinhood.com) with the agentic trading feature enabled
@@ -84,10 +84,21 @@ The Robinhood agentic account is **completely isolated** from your main Robinhoo
 ```bash
 git clone https://github.com/m-np/RobinhoodTrader.git
 cd RobinhoodTrader
+```
 
+**Option A — Anaconda / Miniconda (recommended)**
+
+```bash
+conda create -n robinhoodtrader python=3.11 -y
+conda activate robinhoodtrader
+pip install -r requirements.txt
+```
+
+**Option B — standard venv**
+
+```bash
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-
 pip install -r requirements.txt
 ```
 
@@ -269,7 +280,8 @@ To get started:
 ```bash
 git clone https://github.com/m-np/RobinhoodTrader.git
 cd RobinhoodTrader
-python -m venv .venv && source .venv/bin/activate
+# conda: conda create -n robinhoodtrader python=3.11 -y && conda activate robinhoodtrader
+# venv:  python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # fill in at minimum ANTHROPIC_API_KEY and DATABASE_URL
 createdb robinhoodtrader
