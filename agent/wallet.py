@@ -37,13 +37,31 @@ def check_wallet(mcp_client) -> dict:
         return {"balance": 0.0, "funded": False, "reason": "auth_error"}
 
     funded = balance >= settings.MIN_WALLET_BALANCE_USD
-    if not funded:
+    if funded:
+        # Wallet is healthy — clear any stale wallet_low alerts
+        _clear_wallet_low_alerts()
+    else:
         logger.warning(
             "Wallet $%.2f below minimum $%.2f", balance, settings.MIN_WALLET_BALANCE_USD
         )
         _create_low_balance_alert(balance)
 
     return {"balance": balance, "funded": funded, "reason": None}
+
+
+def _clear_wallet_low_alerts() -> None:
+    db = SessionLocal()
+    try:
+        db.query(Alert).filter(
+            Alert.alert_type == "wallet_low",
+            Alert.acknowledged == False,
+        ).update({"acknowledged": True})
+        db.commit()
+    except Exception as e:
+        logger.error("Failed to clear wallet_low alerts: %s", e)
+        db.rollback()
+    finally:
+        db.close()
 
 
 def _create_not_connected_alert() -> None:
