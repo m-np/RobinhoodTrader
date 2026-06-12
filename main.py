@@ -50,6 +50,20 @@ MIRROR_SEEDS = [
 ]
 
 
+def check_encryption_key() -> None:
+    if settings.ENCRYPTION_KEY:
+        return
+    from cryptography.fernet import Fernet
+    key = Fernet.generate_key().decode()
+    print("\n" + "=" * 60)
+    print("ERROR: ENCRYPTION_KEY is not set in your .env file.")
+    print("Token storage requires an encryption key.")
+    print("\nAdd this line to your .env and restart:")
+    print(f"\n  ENCRYPTION_KEY={key}\n")
+    print("=" * 60 + "\n")
+    sys.exit(1)
+
+
 def run_migrations() -> None:
     logger.info("Running database migrations...")
     result = subprocess.run(
@@ -101,6 +115,7 @@ def seed_defaults() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    check_encryption_key()
     run_migrations()
     seed_defaults()
 

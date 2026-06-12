@@ -2,6 +2,16 @@
 {% block title %}Dashboard — Agentic trader{% endblock %}
 
 {% block content %}
+<!-- Robinhood connection banners -->
+<div class="connect-banner" id="connect-banner" style="display:none">
+  <span>🔌 Robinhood MCP not connected — agent cannot trade.</span>
+  <a href="/auth/robinhood" class="btn-sm">Connect Robinhood</a>
+</div>
+<div class="connected-banner" id="connected-banner" style="display:none">
+  <span>✓ Connected to Robinhood agentic account</span>
+  <button onclick="this.parentElement.style.display='none'">×</button>
+</div>
+
 <!-- Metric cards -->
 <div class="metrics-row">
   <div class="metric-card">

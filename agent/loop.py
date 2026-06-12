@@ -5,8 +5,9 @@ from datetime import datetime
 
 import anthropic
 
-from agent.guardrails import GuardrailViolation, check_all, get_knob
-from agent.mcp_client import RobinhoodMCPClient
+from agent.guardrails import GuardrailViolation, check_all
+from agent.mcp_client import McpConnectionError, RobinhoodMCPClient
+from agent.token_manager import McpAuthError, get_token_manager
 from agent.wallet import check_wallet
 from config import settings
 from db.models import Alert, Blocklist, ConfigKnob, Trade, Watchlist
@@ -27,6 +28,13 @@ On each cycle you should:
 4. Recommend or execute trades within the configured rules
 5. Always explain your reasoning concisely
 
+You have access to Robinhood MCP tools (get_portfolio, get_quote, get_order_history,
+analyze_concentration, read_analyst_notes) for research and data gathering.
+
+For executing trades, always use the LOCAL place_order and cancel_order tools —
+never call Robinhood MCP trade tools directly. Local tools enforce safety guardrails
+before any order reaches Robinhood.
+
 You NEVER:
 - Trade tickers on the blocklist
 - Exceed position size limits
@@ -42,14 +50,33 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
 
     wallet = check_wallet(mcp_client)
     if not wallet["funded"]:
-        logger.info("Agent cycle skipped: wallet not funded ($%.2f)", wallet["balance"])
+        reason = wallet.get("reason", "")
+        if reason == "not_connected":
+            logger.info("Agent cycle skipped: Robinhood not connected")
+        else:
+            logger.info("Agent cycle skipped: wallet not funded ($%.2f)", wallet["balance"])
         return
 
     context = _build_context(mcp_client)
     portfolio = context["portfolio"]
 
     client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-    tools = _agent_tools()
+    local_tools = _agent_tools()
+
+    # Build MCP server config if tokens are available
+    tm = get_token_manager()
+    mcp_servers = []
+    if tm.is_connected():
+        try:
+            token = tm.get_access_token()
+            mcp_servers = [{
+                "type": "url",
+                "url": settings.ROBINHOOD_MCP_URL,
+                "name": "robinhood-trading",
+                "authorization_token": token,
+            }]
+        except McpAuthError as e:
+            logger.warning("Could not get MCP token for agent loop: %s", e)
 
     messages = [
         {
@@ -62,29 +89,47 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
         }
     ]
 
-    logger.info("Starting Claude agent cycle")
+    create_kwargs = dict(
+        model="claude-sonnet-4-6",
+        max_tokens=4096,
+        system=SYSTEM_PROMPT,
+        tools=local_tools,
+        messages=messages,
+    )
+    if mcp_servers:
+        create_kwargs["mcp_servers"] = mcp_servers
+
+    logger.info("Starting Claude agent cycle (MCP: %s)", "enabled" if mcp_servers else "disabled")
+
     while True:
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            tools=tools,
-            messages=messages,
-        )
+        if mcp_servers:
+            response = client.beta.messages.create(
+                **create_kwargs, betas=["mcp-client-2025-04-04"]
+            )
+        else:
+            response = client.messages.create(**create_kwargs)
 
         messages.append({"role": "assistant", "content": response.content})
+        create_kwargs["messages"] = messages
         tool_results = []
 
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            result = _handle_tool_call(block.name, block.input, mcp_client, portfolio, notifier)
-            tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": json.dumps(result, default=str)})
+            result = _handle_tool_call(
+                block.name, block.input, mcp_client, portfolio, notifier
+            )
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": json.dumps(result, default=str),
+            })
 
         if response.stop_reason == "end_turn" or not tool_results:
             break
 
         messages.append({"role": "user", "content": tool_results})
+        create_kwargs["messages"] = messages
 
     logger.info("Agent cycle complete")
 
@@ -97,7 +142,9 @@ def _build_context(mcp_client: RobinhoodMCPClient) -> dict:
         knobs = {r.key: json.loads(r.value) for r in db.query(ConfigKnob).all()}
         recent_alerts = [
             {"type": a.alert_type, "message": a.message, "severity": a.severity}
-            for a in db.query(Alert).filter(Alert.acknowledged == False).limit(10).all()
+            for a in db.query(Alert).filter(
+                Alert.acknowledged == False  # noqa: E712
+            ).limit(10).all()
         ]
         last_trades = [
             {
@@ -125,19 +172,21 @@ def _build_context(mcp_client: RobinhoodMCPClient) -> dict:
     }
 
 
-def _handle_tool_call(name: str, inputs: dict, mcp_client: RobinhoodMCPClient, portfolio: dict, notifier) -> dict:
+def _handle_tool_call(
+    name: str,
+    inputs: dict,
+    mcp_client: RobinhoodMCPClient,
+    portfolio: dict,
+    notifier,
+) -> dict:
     if name == "get_quote":
         return mcp_client.get_quote(inputs["ticker"])
-
     if name == "get_portfolio":
         return mcp_client.get_portfolio()
-
     if name == "create_alert":
         return _create_alert(inputs)
-
     if name == "place_order":
         return _place_order(inputs, mcp_client, portfolio, notifier)
-
     return {"error": f"Unknown tool: {name}"}
 
 
@@ -159,7 +208,12 @@ def _create_alert(inputs: dict) -> dict:
         db.close()
 
 
-def _place_order(inputs: dict, mcp_client: RobinhoodMCPClient, portfolio: dict, notifier) -> dict:
+def _place_order(
+    inputs: dict,
+    mcp_client: RobinhoodMCPClient,
+    portfolio: dict,
+    notifier,
+) -> dict:
     ticker = inputs["ticker"].upper()
     action = inputs["action"]
     quantity = float(inputs["quantity"])
@@ -225,7 +279,7 @@ def _place_order(inputs: dict, mcp_client: RobinhoodMCPClient, portfolio: dict, 
             db.close()
         logger.info("Order placed: %s %s x%.4f @ $%.2f", action, ticker, quantity, price)
         return {"success": True, "trade_id": trade_id, "result": result}
-    except Exception as e:
+    except (McpConnectionError, Exception) as e:
         logger.error("Order failed for %s %s: %s", action, ticker, e)
         db = SessionLocal()
         try:
@@ -242,11 +296,11 @@ def _agent_tools() -> list:
     return [
         {
             "name": "get_quote",
-            "description": "Get the current price and change for a ticker",
+            "description": "Get current price and daily change for a ticker",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "ticker": {"type": "string", "description": "Stock ticker symbol"}
+                    "ticker": {"type": "string", "description": "Stock ticker symbol"},
                 },
                 "required": ["ticker"],
             },
@@ -258,27 +312,39 @@ def _agent_tools() -> list:
         },
         {
             "name": "place_order",
-            "description": "Place a buy or sell order. Guardrails are enforced automatically.",
+            "description": (
+                "Place a buy or sell order. Guardrails are enforced before execution. "
+                "Always use this tool for trades — never use Robinhood MCP place_order directly."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "ticker": {"type": "string"},
                     "action": {"type": "string", "enum": ["buy", "sell"]},
                     "quantity": {"type": "number"},
-                    "asset_class": {"type": "string", "enum": ["stock", "crypto", "options", "futures", "event_contract"]},
-                    "rationale": {"type": "string", "description": "Brief explanation of why this trade is recommended"},
+                    "asset_class": {
+                        "type": "string",
+                        "enum": ["stock", "crypto", "options", "futures", "event_contract"],
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "Brief explanation of why this trade is recommended",
+                    },
                 },
                 "required": ["ticker", "action", "quantity"],
             },
         },
         {
             "name": "create_alert",
-            "description": "Create an alert visible in the dashboard",
+            "description": "Create an alert visible on the dashboard",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "ticker": {"type": "string"},
-                    "alert_type": {"type": "string", "enum": ["market_wave", "mirror_trade", "approval_request", "wallet_low"]},
+                    "alert_type": {
+                        "type": "string",
+                        "enum": ["market_wave", "mirror_trade", "approval_request", "wallet_low"],
+                    },
                     "message": {"type": "string"},
                     "severity": {"type": "string", "enum": ["info", "warning", "critical"]},
                 },

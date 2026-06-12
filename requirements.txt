@@ -12,5 +12,6 @@ python-multipart>=0.0.9
 httpx2>=0.28.0
 twilio>=9.3.0
 pytz>=2024.2
+cryptography>=42.0.0
 pytest>=8.0.0
 pytest-anyio>=0.0.0

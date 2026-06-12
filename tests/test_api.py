@@ -349,3 +349,92 @@ class TestPortfolio:
         assert "today_pnl" in data
         assert "total_return_pct" in data
         assert isinstance(data["holdings"], list)
+
+
+# ── Robinhood OAuth / token endpoints ────────────────────────────────────────
+
+class TestRobinhoodAuth:
+    def test_status_not_connected_when_no_tokens(self, client):
+        # Clear any tokens left by other tests
+        from db.models import RobinhoodToken
+        from db.session import SessionLocal
+        db = SessionLocal()
+        try:
+            db.query(RobinhoodToken).delete()
+            db.commit()
+        finally:
+            db.close()
+
+        r = client.get("/api/robinhood/status")
+        assert r.status_code == 200
+        assert r.json()["connected"] is False
+        assert r.json()["expires_at"] is None
+
+    def test_manual_token_save_and_status(self, client):
+        from db.models import RobinhoodToken
+        from db.session import SessionLocal
+
+        r = client.post("/api/robinhood/token", json={
+            "access_token": "test-access-abc",
+            "refresh_token": "test-refresh-xyz",
+            "expires_at": "2099-01-01T00:00:00",
+        })
+        assert r.status_code == 200
+        assert r.json()["status"] == "saved"
+
+        # Status should now be connected
+        r = client.get("/api/robinhood/status")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["connected"] is True
+        assert data["expires_at"] is not None
+
+        # Tokens must be encrypted in DB (not plain text)
+        db = SessionLocal()
+        try:
+            row = db.query(RobinhoodToken).first()
+            assert row is not None
+            assert "test-access-abc" not in row.access_token_enc
+            assert "test-refresh-xyz" not in row.refresh_token_enc
+        finally:
+            db.close()
+
+    def test_manual_token_defaults_expires_at(self, client):
+        r = client.post("/api/robinhood/token", json={
+            "access_token": "token-no-expiry",
+            "refresh_token": "",
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert "expires_at" in data
+        # Should default to ~24h from now
+        from datetime import datetime
+        expires = datetime.fromisoformat(data["expires_at"])
+        assert expires > datetime.utcnow()
+
+    def test_manual_token_bad_expires_at_returns_400(self, client):
+        r = client.post("/api/robinhood/token", json={
+            "access_token": "tok",
+            "expires_at": "not-a-date",
+        })
+        assert r.status_code == 400
+
+    def test_auth_robinhood_redirect_without_client_id(self, client):
+        # Without ROBINHOOD_CLIENT_ID configured, should return 501
+        r = client.get("/auth/robinhood", follow_redirects=False)
+        assert r.status_code == 501
+
+    def test_tokens_survive_re_save(self, client):
+        """Upsert — saving again must not create a second row."""
+        from db.models import RobinhoodToken
+        from db.session import SessionLocal
+
+        client.post("/api/robinhood/token", json={"access_token": "tok-a", "refresh_token": "ref-a"})
+        client.post("/api/robinhood/token", json={"access_token": "tok-b", "refresh_token": "ref-b"})
+
+        db = SessionLocal()
+        try:
+            count = db.query(RobinhoodToken).count()
+            assert count == 1
+        finally:
+            db.close()

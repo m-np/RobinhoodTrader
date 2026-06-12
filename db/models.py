@@ -96,3 +96,62 @@ class Report(Base):
     pnl_pct = Column(Float, nullable=True)
     report_type = Column(String, nullable=False, default="weekly")
     created_at = Column(DateTime, default=_now, nullable=False)
+
+
+class RobinhoodToken(Base):
+    """Stores exactly one row — the current OAuth tokens, encrypted at rest."""
+
+    __tablename__ = "robinhood_tokens"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    access_token_enc = Column(Text, nullable=False)   # Fernet-encrypted, base64
+    refresh_token_enc = Column(Text, nullable=False)  # Fernet-encrypted, base64
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=_now, nullable=False)
+    updated_at = Column(DateTime, default=_now, onupdate=_now, nullable=False)
+
+
+def _fernet():
+    from cryptography.fernet import Fernet
+    from config import settings
+    if not settings.ENCRYPTION_KEY:
+        raise ValueError("ENCRYPTION_KEY is not set — cannot encrypt/decrypt tokens")
+    return Fernet(settings.ENCRYPTION_KEY.encode())
+
+
+def get_tokens(db) -> dict | None:
+    """Return decrypted token dict or None if no tokens are stored."""
+    row = db.query(RobinhoodToken).first()
+    if row is None:
+        return None
+    f = _fernet()
+    return {
+        "access_token": f.decrypt(row.access_token_enc.encode()).decode(),
+        "refresh_token": f.decrypt(row.refresh_token_enc.encode()).decode(),
+        "expires_at": row.expires_at,
+    }
+
+
+def save_tokens(db, access_token: str, refresh_token: str, expires_at: datetime) -> None:
+    """Encrypt and upsert tokens — always keeps exactly one row."""
+    f = _fernet()
+    enc_access = f.encrypt(access_token.encode()).decode()
+    enc_refresh = f.encrypt(refresh_token.encode()).decode()
+    now = datetime.utcnow()
+
+    row = db.query(RobinhoodToken).first()
+    if row:
+        row.access_token_enc = enc_access
+        row.refresh_token_enc = enc_refresh
+        row.expires_at = expires_at
+        row.updated_at = now
+    else:
+        db.add(RobinhoodToken(
+            id=str(uuid.uuid4()),
+            access_token_enc=enc_access,
+            refresh_token_enc=enc_refresh,
+            expires_at=expires_at,
+            created_at=now,
+            updated_at=now,
+        ))
+    db.commit()

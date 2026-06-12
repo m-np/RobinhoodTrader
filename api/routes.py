@@ -1,19 +1,25 @@
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import HTMLResponse
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from fastapi import Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from agent.guardrails import get_knob, set_knob
 from agent.mcp_client import RobinhoodMCPClient
 from api.deps import get_db
-from db.models import Alert, Blocklist, ConfigKnob, MirrorSource, Report, Trade, Watchlist
+from config import settings
+from db.models import (
+    Alert, Blocklist, ConfigKnob, MirrorSource,
+    Report, RobinhoodToken, Trade, Watchlist,
+    get_tokens, save_tokens,
+)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="ui/templates")
@@ -304,4 +310,94 @@ async def api_last_report(db: Session = Depends(get_db)):
         "pnl_pct": report.pnl_pct,
         "report_type": report.report_type,
         "created_at": report.created_at.isoformat() if report.created_at else None,
+    }
+
+
+# ── Robinhood OAuth + token management ───────────────────────────────────────
+
+_AUTHORIZE_URL = "https://agent.robinhood.com/oauth/authorize"
+_TOKEN_URL = "https://agent.robinhood.com/oauth/token"
+
+
+@router.get("/auth/robinhood")
+async def auth_robinhood():
+    """Redirect to Robinhood OAuth consent page."""
+    if not settings.ROBINHOOD_CLIENT_ID:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "ROBINHOOD_CLIENT_ID is not configured. "
+                "Use POST /api/robinhood/token to set tokens manually."
+            ),
+        )
+    params = {
+        "response_type": "code",
+        "client_id": settings.ROBINHOOD_CLIENT_ID,
+        "redirect_uri": settings.ROBINHOOD_REDIRECT_URI,
+        "scope": "trading",
+    }
+    return RedirectResponse(url=f"{_AUTHORIZE_URL}?{urlencode(params)}")
+
+
+@router.get("/auth/robinhood/callback")
+async def auth_robinhood_callback(code: str, db: Session = Depends(get_db)):
+    """Exchange the OAuth code for tokens and save them encrypted."""
+    try:
+        resp = httpx.post(
+            _TOKEN_URL,
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": settings.ROBINHOOD_CLIENT_ID,
+                "client_secret": settings.ROBINHOOD_CLIENT_SECRET,
+                "redirect_uri": settings.ROBINHOOD_REDIRECT_URI,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Token exchange failed ({e.response.status_code}): {e.response.text}",
+        ) from e
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Token exchange request error: {e}") from e
+
+    expires_at = datetime.utcnow() + timedelta(seconds=int(data.get("expires_in", 3600)))
+    save_tokens(db, data["access_token"], data.get("refresh_token", ""), expires_at)
+    return RedirectResponse(url="/?connected=true")
+
+
+class ManualTokenInput(BaseModel):
+    access_token: str
+    refresh_token: str = ""
+    expires_at: Optional[str] = None  # ISO datetime string; defaults to 24 h from now
+
+
+@router.post("/api/robinhood/token")
+async def set_manual_token(body: ManualTokenInput, db: Session = Depends(get_db)):
+    """Paste tokens obtained via the Robinhood CLI auth flow."""
+    if body.expires_at:
+        try:
+            expires_at = datetime.fromisoformat(body.expires_at)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="expires_at must be ISO format") from e
+    else:
+        expires_at = datetime.utcnow() + timedelta(hours=24)
+
+    save_tokens(db, body.access_token, body.refresh_token, expires_at)
+    return {"status": "saved", "expires_at": expires_at.isoformat()}
+
+
+@router.get("/api/robinhood/status")
+async def robinhood_status(db: Session = Depends(get_db)):
+    """Returns connection status — used by the dashboard banner."""
+    tokens = get_tokens(db)
+    if tokens is None:
+        return {"connected": False, "expires_at": None, "account_id": None}
+    return {
+        "connected": True,
+        "expires_at": tokens["expires_at"].isoformat() if tokens["expires_at"] else None,
+        "account_id": None,
     }

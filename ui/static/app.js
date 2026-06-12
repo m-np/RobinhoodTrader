@@ -5,6 +5,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 async function loadAll() {
   await Promise.all([
+    loadRobinhoodStatus(),
     loadWallet(),
     loadPortfolio(),
     loadAlerts(),
@@ -14,6 +15,41 @@ async function loadAll() {
     loadKnobs(),
     loadLastReport(),
   ]);
+}
+
+// Robinhood connection status
+async function loadRobinhoodStatus() {
+  const connectBanner = document.getElementById('connect-banner');
+  const connectedBanner = document.getElementById('connected-banner');
+  if (!connectBanner && !connectedBanner) return;
+  try {
+    const res = await fetch('/api/robinhood/status');
+    const data = await res.json();
+    const dot = document.getElementById('status-dot');
+    const txt = document.getElementById('status-text');
+    if (data.connected) {
+      if (connectBanner) connectBanner.style.display = 'none';
+      if (connectedBanner) {
+        // Show briefly on first load if ?connected=true in URL
+        const freshConnect = new URLSearchParams(window.location.search).get('connected');
+        if (freshConnect === 'true') {
+          connectedBanner.style.display = 'flex';
+          setTimeout(() => { connectedBanner.style.display = 'none'; }, 4000);
+          // Clean URL without reload
+          window.history.replaceState({}, '', '/');
+        }
+      }
+      if (dot) dot.style.background = '#2d7a4f';
+      if (txt) txt.textContent = 'Agent running';
+    } else {
+      if (connectBanner) connectBanner.style.display = 'flex';
+      if (connectedBanner) connectedBanner.style.display = 'none';
+      if (dot) dot.style.background = '#854f0b';
+      if (txt) txt.textContent = 'Not connected to Robinhood';
+    }
+  } catch (e) {
+    console.error('loadRobinhoodStatus:', e);
+  }
 }
 
 // Wallet

@@ -95,6 +95,46 @@ body {
   cursor: pointer;
 }
 
+/* ── Connection banners (inside page content) ────────────────────────────── */
+.connect-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--red-bg);
+  border: 0.5px solid var(--red);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--red);
+  margin-bottom: 16px;
+}
+.connect-banner .btn-sm {
+  color: var(--red);
+  border-color: var(--red);
+  text-decoration: none;
+  padding: 4px 10px;
+}
+.connected-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--green-bg);
+  border: 0.5px solid var(--green);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--green);
+  margin-bottom: 16px;
+}
+.connected-banner button {
+  background: none;
+  border: none;
+  color: var(--green);
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+}
+
 /* ── Page ─────────────────────────────────────────────────────────────────── */
 .page {
   padding-top: 72px;
