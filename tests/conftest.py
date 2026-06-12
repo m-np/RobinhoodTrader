@@ -20,4 +20,21 @@ def client():
          patch("agent.scheduler.stop_scheduler"):
         from main import app
         with TestClient(app) as c:
+            _clear_stale_tokens()
             yield c
+
+
+def _clear_stale_tokens():
+    """
+    Delete any tokens left from a previous test session.
+    They were encrypted with a different key and would cause
+    decryption failures in tests that hit the MCP client.
+    """
+    from db.models import RobinhoodToken
+    from db.session import SessionLocal
+    db = SessionLocal()
+    try:
+        db.query(RobinhoodToken).delete()
+        db.commit()
+    finally:
+        db.close()

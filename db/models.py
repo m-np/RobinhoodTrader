@@ -120,16 +120,29 @@ def _fernet():
 
 
 def get_tokens(db) -> dict | None:
-    """Return decrypted token dict or None if no tokens are stored."""
+    """
+    Return decrypted token dict or None if no tokens are stored.
+    Returns None (treats as not-connected) if decryption fails — this happens
+    when ENCRYPTION_KEY has changed since the tokens were saved.
+    """
     row = db.query(RobinhoodToken).first()
     if row is None:
         return None
-    f = _fernet()
-    return {
-        "access_token": f.decrypt(row.access_token_enc.encode()).decode(),
-        "refresh_token": f.decrypt(row.refresh_token_enc.encode()).decode(),
-        "expires_at": row.expires_at,
-    }
+    try:
+        f = _fernet()
+        return {
+            "access_token": f.decrypt(row.access_token_enc.encode()).decode(),
+            "refresh_token": f.decrypt(row.refresh_token_enc.encode()).decode(),
+            "expires_at": row.expires_at,
+        }
+    except Exception:
+        # Key mismatch or corrupted data — treat as not connected
+        import logging
+        logging.getLogger(__name__).warning(
+            "Token decryption failed — ENCRYPTION_KEY may have changed. "
+            "Re-authenticate at /auth/robinhood."
+        )
+        return None
 
 
 def save_tokens(db, access_token: str, refresh_token: str, expires_at: datetime) -> None:
