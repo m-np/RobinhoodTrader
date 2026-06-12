@@ -132,10 +132,53 @@ SMTP_PASSWORD=...        # use a Gmail App Password, not your main password
 
 The `.env` file is listed in `.gitignore` and will never be committed.
 
-### 3. Create the database
+### 3. Install and start PostgreSQL
+
+**Ubuntu / Debian**
+
+```bash
+sudo apt update && sudo apt install -y postgresql postgresql-contrib
+sudo systemctl start postgresql
+sudo systemctl enable postgresql        # auto-start on reboot
+```
+
+**Mac (Homebrew)**
+
+```bash
+brew install postgresql@14
+brew services start postgresql@14
+```
+
+**Create the database**
+
+Try this first:
 
 ```bash
 createdb robinhoodtrader
+```
+
+If you get a permission error, your system user isn't a Postgres superuser yet. Fix it with:
+
+```bash
+sudo -u postgres createuser --superuser $USER
+createdb robinhoodtrader
+```
+
+Verify it worked:
+
+```bash
+psql -d robinhoodtrader -c "\conninfo"
+# You are connected to database "robinhoodtrader" as user "..."
+```
+
+Update `DATABASE_URL` in your `.env` to match:
+
+```env
+# If createdb worked directly (most common):
+DATABASE_URL=postgresql://localhost/robinhoodtrader
+
+# If you needed sudo -u postgres:
+DATABASE_URL=postgresql://postgres@localhost/robinhoodtrader
 ```
 
 The app runs Alembic migrations automatically on startup, so no manual `alembic upgrade` is needed.
@@ -165,6 +208,17 @@ Open **http://localhost:8000** in your browser.
 3. The first agent cycle fires ~15 minutes after startup (configurable via `AGENT_INTERVAL_MINUTES` in `.env`). Claude will review your portfolio and watchlist and decide whether any trades are warranted.
 4. All trades above $500 (configurable in Settings → Approval threshold) will appear as approval requests on the dashboard and trigger a notification before any order is placed.
 5. Approval requests time out after 10 minutes by default and are automatically cancelled if you do not respond.
+
+### Troubleshooting
+
+| Error | Fix |
+|---|---|
+| `No such file or directory` on socket | PostgreSQL not running — `sudo systemctl start postgresql` |
+| `FATAL: database "robinhoodtrader" does not exist` | Run `createdb robinhoodtrader` (or `sudo -u postgres createdb robinhoodtrader`) |
+| `createdb: command not found` | PostgreSQL not installed — `sudo apt install postgresql` |
+| `createdb: permission denied` | `sudo -u postgres createuser --superuser $USER` then retry |
+| `ANTHROPIC_API_KEY` missing error | `.env` not saved or not in the `RobinhoodTrader/` directory |
+| Port 8000 already in use | Add `PORT=8001` to `.env` |
 
 ---
 
