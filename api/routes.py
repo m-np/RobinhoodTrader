@@ -1,7 +1,7 @@
 import json
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
@@ -31,22 +31,22 @@ def _get_mcp() -> RobinhoodMCPClient:
 
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    return templates.TemplateResponse("dashboard.html", {"request": request, "active": "dashboard"})
+    return templates.TemplateResponse(request, "dashboard.html", {"active": "dashboard"})
 
 
 @router.get("/watchlist", response_class=HTMLResponse)
 async def watchlist_page(request: Request):
-    return templates.TemplateResponse("watchlist.html", {"request": request, "active": "watchlist"})
+    return templates.TemplateResponse(request, "watchlist.html", {"active": "watchlist"})
 
 
 @router.get("/mirrors", response_class=HTMLResponse)
 async def mirrors_page(request: Request):
-    return templates.TemplateResponse("mirrors.html", {"request": request, "active": "mirrors"})
+    return templates.TemplateResponse(request, "mirrors.html", {"active": "mirrors"})
 
 
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
-    return templates.TemplateResponse("settings.html", {"request": request, "active": "settings"})
+    return templates.TemplateResponse(request, "settings.html", {"active": "settings"})
 
 
 # ── Portfolio / wallet ───────────────────────────────────────────────────────
@@ -237,7 +237,7 @@ async def remove_blocklist(ticker: str, db: Session = Depends(get_db)):
 
 class KnobUpdate(BaseModel):
     key: str
-    value: object
+    value: Any
 
 
 @router.get("/api/knobs")
