@@ -527,6 +527,69 @@ body {
 }
 .inline-form input[type=text]:focus { border-color: var(--blue); }
 
+/* ── Ticker search dropdown ───────────────────────────────────────────────── */
+.ticker-search-wrap {
+  background: var(--bg);
+  border: 0.5px solid var(--border-md);
+  border-radius: var(--radius);
+  padding: 10px;
+  margin-bottom: 8px;
+  position: relative;
+}
+.ticker-search-wrap input[type=text] {
+  width: 100%;
+  height: 34px;
+  border: 0.5px solid var(--border-md);
+  border-radius: var(--radius);
+  padding: 0 10px;
+  font-size: 13px;
+  font-family: inherit;
+  background: var(--bg-2);
+  color: var(--text);
+  outline: none;
+}
+.ticker-search-wrap input[type=text]:focus { border-color: var(--blue); }
+.search-dropdown {
+  position: absolute;
+  left: 10px; right: 10px;
+  background: var(--bg);
+  border: 0.5px solid var(--border-md);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.10);
+  z-index: 50;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.search-result {
+  padding: 9px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  border-bottom: 0.5px solid var(--border);
+}
+.search-result:last-child { border-bottom: none; }
+.search-result:hover { background: var(--bg-2); }
+.search-result strong { min-width: 50px; }
+.search-result span { color: var(--text-2); font-size: 12px; }
+
 /* ── Report card ──────────────────────────────────────────────────────────── */
-.report-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
-.report-body { font-size: 13px; color: var(--text-2); line-height: 1.6; margin-bottom: 10px; white-space: pre-wrap; }
+.report-card {
+  padding: 16px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: box-shadow 0.15s;
+}
+.report-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+.report-title-text { font-size: 14px; font-weight: 500; }
+.report-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0; }
+.report-body {
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.6;
+  margin-top: 14px;
+  white-space: pre-wrap;
+  border-top: 0.5px solid var(--border);
+  padding-top: 12px;
+}

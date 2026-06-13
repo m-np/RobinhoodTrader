@@ -19,7 +19,11 @@
     <div class="metric-value" id="m-wallet">—</div>
   </div>
   <div class="metric-card">
-    <div class="metric-label">Today's P&amp;L</div>
+    <div class="metric-label">Portfolio value</div>
+    <div class="metric-value" id="m-total">—</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">Today's gain</div>
     <div class="metric-value" id="m-pnl">—</div>
   </div>
   <div class="metric-card">
@@ -36,11 +40,36 @@
 <div class="two-col">
   <!-- Main feed -->
   <div>
-    <!-- Portfolio holdings -->
+
+    <!-- Portfolio time-series chart -->
     <section class="section">
       <div class="section-header">
-        <span class="section-title">Portfolio</span>
-        <span class="section-note">Isolated from your main Robinhood account</span>
+        <span class="section-title">Portfolio value</span>
+        <div style="display:flex;gap:6px">
+          <button class="seg-btn active" id="period-1d" onclick="setPeriod('1d',this)">1D</button>
+          <button class="seg-btn" id="period-7d" onclick="setPeriod('7d',this)">7D</button>
+          <button class="seg-btn" id="period-30d" onclick="setPeriod('30d',this)">1M</button>
+          <button class="seg-btn" id="period-90d" onclick="setPeriod('90d',this)">3M</button>
+        </div>
+      </div>
+      <div class="card" style="padding:16px">
+        <!-- Period gain/loss summary (delta only — live total is in the metric card above) -->
+        <div id="chart-gain-row" style="display:none;margin-bottom:12px">
+          <span id="chart-gain-pct" class="badge" style="font-size:13px"></span>
+          <span id="chart-gain-label" style="font-size:12px;color:var(--text-3);margin-left:8px"></span>
+        </div>
+        <canvas id="portfolio-chart" height="120"></canvas>
+        <p id="chart-empty" style="color:var(--text-3);font-size:13px;text-align:center;padding:20px 0;display:none">
+          No history yet — chart fills in as the agent runs every 15 minutes.
+        </p>
+      </div>
+    </section>
+
+    <!-- Holdings -->
+    <section class="section">
+      <div class="section-header">
+        <span class="section-title">Holdings</span>
+        <span class="section-note">Agentic account only</span>
       </div>
       <div class="card" id="portfolio-table">
         <p style="color:var(--text-3);font-size:13px">Loading...</p>
@@ -58,24 +87,6 @@
       </div>
     </section>
 
-    <!-- Last report -->
-    <section class="section">
-      <div class="section-header">
-        <span class="section-title">Last report</span>
-        <span class="section-note" id="report-date">—</span>
-      </div>
-      <div class="card" id="report-card">
-        <div class="report-top">
-          <div>
-            <div class="card-title" id="report-title">—</div>
-            <div class="card-sub" id="report-sub">—</div>
-          </div>
-          <span class="badge badge-green" id="report-pnl">—</span>
-        </div>
-        <p class="report-body" id="report-body">No reports yet. Reports are generated after market close.</p>
-        <button class="btn-sm" onclick="requestFullReport()">Full report</button>
-      </div>
-    </section>
   </div>
 
   <!-- Sidebar -->
@@ -86,22 +97,32 @@
         <span class="section-title">Watchlist</span>
         <button class="btn-sm" onclick="showAddWatch()">+ Add</button>
       </div>
-      <div class="inline-form" id="add-watch-form" style="display:none">
-        <input type="text" id="new-ticker" placeholder="Ticker (e.g. AAPL)" maxlength="10">
-        <input type="text" id="new-notes" placeholder="Notes (optional)">
-        <button class="btn-primary btn-sm" onclick="addToWatchlist()">Add</button>
-        <button class="btn-sm" onclick="document.getElementById('add-watch-form').style.display='none'">Cancel</button>
+      <div class="ticker-search-wrap" id="watch-search-wrap" style="display:none">
+        <input type="text" id="watch-search-input" placeholder="Search company or ticker…" oninput="onTickerSearch(this.value,'watch')" autocomplete="off">
+        <div class="search-dropdown" id="watch-search-dropdown"></div>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <input type="text" id="watch-notes" placeholder="Notes (optional)" style="flex:1">
+          <button class="btn-sm" onclick="showAddWatch()">Cancel</button>
+        </div>
       </div>
       <div class="card" id="watchlist-widget">
         <p style="color:var(--text-3);font-size:12px">Loading...</p>
       </div>
     </div>
 
-    <!-- Blocklist widget -->
+    <!-- Don't buy widget -->
     <div class="sidebar-section">
       <div class="section-header">
-        <span class="section-title">Never buy</span>
-        <button class="btn-sm" onclick="promptAddBlock()">+ Add</button>
+        <span class="section-title">Don't buy</span>
+        <button class="btn-sm" onclick="showAddBlock()">+ Add</button>
+      </div>
+      <div class="ticker-search-wrap" id="block-search-wrap" style="display:none">
+        <input type="text" id="block-search-input" placeholder="Search company or ticker…" oninput="onTickerSearch(this.value,'block')" autocomplete="off">
+        <div class="search-dropdown" id="block-search-dropdown"></div>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <input type="text" id="block-reason" placeholder="Reason (optional)" style="flex:1">
+          <button class="btn-sm" onclick="showAddBlock()">Cancel</button>
+        </div>
       </div>
       <div class="card">
         <div class="pill-list" id="blocklist-widget">
@@ -122,10 +143,124 @@
     </div>
   </div>
 </div>
+
+<!-- Quick trade modal -->
+<div id="quick-trade-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeQuickTrade()">
+  <div class="modal-card">
+    <div class="modal-header">
+      <span id="qt-title">Quick trade</span>
+      <button onclick="closeQuickTrade()">×</button>
+    </div>
+    <div style="padding:16px">
+      <div style="margin-bottom:12px">
+        <span id="qt-ticker" style="font-size:18px;font-weight:500"></span>
+        <span id="qt-price" style="font-size:13px;color:var(--text-3);margin-left:8px"></span>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <div style="flex:1">
+          <label style="font-size:12px;color:var(--text-3);display:block;margin-bottom:4px">Amount ($)</label>
+          <input type="number" id="qt-amount" placeholder="e.g. 50" style="width:100%;height:34px;border:0.5px solid var(--border-md);border-radius:var(--radius);padding:0 10px;font-size:13px;font-family:inherit">
+        </div>
+        <div style="flex:1">
+          <label style="font-size:12px;color:var(--text-3);display:block;margin-bottom:4px">Shares</label>
+          <input type="number" id="qt-qty" placeholder="or enter qty" style="width:100%;height:34px;border:0.5px solid var(--border-md);border-radius:var(--radius);padding:0 10px;font-size:13px;font-family:inherit">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button id="qt-confirm" class="btn-primary" style="flex:1" onclick="submitQuickTrade()">Confirm</button>
+        <button class="btn" style="flex:1" onclick="closeQuickTrade()">Cancel</button>
+      </div>
+      <p id="qt-result" style="font-size:13px;margin-top:10px;color:var(--text-2)"></p>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
+let _portfolioChart = null;
+let _currentPeriod = '7d';
+let _qtTicker = '';
+let _qtAction = '';
+
+// ── Portfolio chart ────────────────────────────────────────────────────────────
+async function loadPortfolioChart(period) {
+  const res = await fetch('/api/portfolio/history?period=' + period);
+  const data = await res.json();
+  const canvas = document.getElementById('portfolio-chart');
+  const empty = document.getElementById('chart-empty');
+  const gainRow = document.getElementById('chart-gain-row');
+  if (!data.length) {
+    canvas.style.display = 'none';
+    empty.style.display = 'block';
+    gainRow.style.display = 'none';
+    return;
+  }
+  canvas.style.display = 'block';
+  empty.style.display = 'none';
+
+  const labels = data.map(d => {
+    const dt = new Date(d.ts);
+    return period === '1d'
+      ? dt.toLocaleTimeString('en-US', {hour:'numeric',minute:'2-digit'})
+      : dt.toLocaleDateString('en-US', {month:'short',day:'numeric'});
+  });
+  const values = data.map(d => d.total_value);
+  const first = values[0] || 0;
+  const last = values[values.length-1] || 0;
+  const gain = last - first;
+  const gainPct = first > 0 ? (gain / first * 100) : 0;
+  const up = gain >= 0;
+  const color = up ? '#2d7a4f' : '#a32d2d';
+  const bgColor = up ? 'rgba(45,122,79,0.08)' : 'rgba(163,45,45,0.08)';
+
+  // Update gain row — show period delta, not the raw last-snapshot total
+  gainRow.style.display = 'block';
+  const gainPctEl = document.getElementById('chart-gain-pct');
+  const gainLabel = document.getElementById('chart-gain-label');
+  const gainSign = up ? '+' : '';
+  gainPctEl.textContent = gainSign + '$' + Math.abs(gain).toFixed(2) + ' (' + gainSign + gainPct.toFixed(2) + '%)';
+  gainPctEl.className = 'badge ' + (up ? 'badge-green' : 'badge-red');
+  const periodLabels = {'1d':'today','7d':'past 7 days','30d':'past month','90d':'past 3 months'};
+  gainLabel.textContent = periodLabels[period] || period;
+
+  if (_portfolioChart) _portfolioChart.destroy();
+  _portfolioChart = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        borderColor: color,
+        backgroundColor: bgColor,
+        borderWidth: 1.5,
+        pointRadius: data.length > 30 ? 0 : 2,
+        fill: true,
+        tension: 0.3,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false }, tooltip: {
+        callbacks: { label: ctx => '$' + ctx.parsed.y.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) }
+      }},
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#9e9e99', font: { size: 11 }, maxTicksLimit: 6 } },
+        y: { grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { color: '#9e9e99', font: { size: 11 }, callback: v => '$'+v.toLocaleString() } }
+      }
+    }
+  });
+}
+
+function setPeriod(period, btn) {
+  _currentPeriod = period;
+  document.querySelectorAll('#period-1d,#period-7d,#period-30d,#period-90d').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  loadPortfolioChart(period);
+}
+
+// ── Dashboard-sidebar mirrors (compact view) ──────────────────────────────────
 async function loadMirrors() {
   try {
     const res = await fetch('/api/mirrors');
@@ -134,7 +269,7 @@ async function loadMirrors() {
     if (!widget) return;
     const enabled = mirrors.filter(m => m.enabled);
     if (enabled.length === 0) {
-      widget.innerHTML = '<p style="color:var(--text-3);font-size:12px;padding:4px 0">No mirrors enabled. <a href="/mirrors" style="color:var(--blue)">Set up mirrors →</a></p>';
+      widget.innerHTML = '<p style="color:var(--text-3);font-size:12px;padding:4px 0">No mirrors enabled. <a href="/mirrors" style="color:var(--blue)">Set up →</a></p>';
       return;
     }
     widget.innerHTML = enabled.map(m => `
@@ -145,15 +280,60 @@ async function loadMirrors() {
             <div class="mirror-name">${m.name}</div>
             <div class="mirror-meta">${m.source_type === 'congressional' ? 'Congress' : 'Institution'} · ${(m.scale_factor*100).toFixed(1)}% scale</div>
           </div>
-          <label class="toggle">
-            <input type="checkbox" checked onchange="toggleMirror('${m.slug}', this.checked)">
-            <span class="toggle-slider"></span>
-          </label>
         </div>
-        <div class="mirror-last" id="mirror-last-${m.slug}">${m.last_checked_at ? 'Last: '+formatDate(m.last_checked_at) : 'Not yet checked'}</div>
       </div>
     `).join('');
   } catch(e) { console.error('loadMirrors:', e); }
 }
+
+// ── Quick trade modal ──────────────────────────────────────────────────────────
+function openQuickTrade(ticker, action, price) {
+  _qtTicker = ticker;
+  _qtAction = action;
+  document.getElementById('qt-title').textContent = action.charAt(0).toUpperCase() + action.slice(1) + ' ' + ticker;
+  document.getElementById('qt-ticker').textContent = ticker;
+  document.getElementById('qt-price').textContent = price ? 'Current price: $' + price.toFixed(2) : '';
+  document.getElementById('qt-amount').value = '';
+  document.getElementById('qt-qty').value = '';
+  document.getElementById('qt-result').textContent = '';
+  document.getElementById('quick-trade-modal').style.display = 'flex';
+}
+function closeQuickTrade() {
+  document.getElementById('quick-trade-modal').style.display = 'none';
+}
+async function submitQuickTrade() {
+  const amount = parseFloat(document.getElementById('qt-amount').value) || 0;
+  const qty = parseFloat(document.getElementById('qt-qty').value) || 0;
+  const btn = document.getElementById('qt-confirm');
+  btn.textContent = 'Submitting…';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/trades/quick', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ticker:_qtTicker, action:_qtAction, amount_usd:amount, quantity:qty})
+    });
+    const d = await res.json();
+    if (!res.ok) {
+      document.getElementById('qt-result').textContent = '⚠ ' + (d.detail || 'Error');
+      document.getElementById('qt-result').style.color = 'var(--red)';
+    } else {
+      document.getElementById('qt-result').textContent = `✓ ${d.status} — ${d.qty?.toFixed(4)} shares @ $${d.price?.toFixed(2)}`;
+      document.getElementById('qt-result').style.color = 'var(--green)';
+      setTimeout(closeQuickTrade, 2000);
+      loadPortfolio();
+    }
+  } catch(e) {
+    document.getElementById('qt-result').textContent = 'Network error';
+  }
+  btn.textContent = 'Confirm';
+  btn.disabled = false;
+}
+
+// On load
+document.addEventListener('DOMContentLoaded', async () => {
+  loadPortfolioChart('7d');
+  setInterval(() => loadPortfolioChart(_currentPeriod), 300000); // refresh chart every 5 min
+});
 </script>
 {% endblock %}

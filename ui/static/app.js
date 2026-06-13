@@ -1,6 +1,8 @@
 document.addEventListener('DOMContentLoaded', async () => {
   await loadAll();
   setInterval(pollAlerts, 30000);
+  setInterval(loadWatchlist, 5000);    // quotes: 5 s (1 MCP call)
+  setInterval(loadPortfolio, 15000);  // holdings + P&L: 15 s (3 MCP calls)
 });
 
 async function loadAll() {
@@ -13,7 +15,6 @@ async function loadAll() {
     loadBlocklist(),
     loadMirrors(),
     loadKnobs(),
-    loadLastReport(),
   ]);
 }
 
@@ -30,12 +31,10 @@ async function loadRobinhoodStatus() {
     if (data.connected) {
       if (connectBanner) connectBanner.style.display = 'none';
       if (connectedBanner) {
-        // Show briefly on first load if ?connected=true in URL
         const freshConnect = new URLSearchParams(window.location.search).get('connected');
         if (freshConnect === 'true') {
           connectedBanner.style.display = 'flex';
           setTimeout(() => { connectedBanner.style.display = 'none'; }, 4000);
-          // Clean URL without reload
           window.history.replaceState({}, '', '/');
         }
       }
@@ -87,9 +86,17 @@ async function loadPortfolio() {
   try {
     const res = await fetch('/api/portfolio');
     const data = await res.json();
+    const total = document.getElementById('m-total');
+    const equity = document.getElementById('m-equity');
     const pnl = document.getElementById('m-pnl');
     const ret = document.getElementById('m-return');
     const trd = document.getElementById('m-trades');
+    if (total && data.total_value != null) {
+      total.textContent = '$' + data.total_value.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    }
+    if (equity && data.equity_value != null) {
+      equity.textContent = '$' + data.equity_value.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    }
     if (pnl) {
       const v = data.today_pnl || 0;
       pnl.textContent = (v >= 0 ? '+' : '') + '$' + Math.abs(v).toFixed(2);
@@ -121,36 +128,50 @@ async function loadPortfolio() {
   } catch (e) { console.error('loadPortfolio:', e); }
 }
 
-// Alerts
+// Alerts — full action buttons for all signal types
 async function loadAlerts() {
   try {
     const res = await fetch('/api/alerts');
     const alerts = await res.json();
     const feed = document.getElementById('signals-feed');
     if (!feed) return;
-    if (alerts.length === 0) {
+    if (!alerts.length) {
       feed.innerHTML = '<p style="color:var(--text-3);font-size:13px;padding:12px 0">No active signals.</p>';
       return;
     }
-    feed.innerHTML = alerts.map(a => `
-      <div class="signal-card" data-severity="${a.severity}">
-        <div class="signal-top">
-          <div>
-            ${a.ticker ? `<span class="signal-ticker">${a.ticker}</span>` : ''}
-            <span class="badge ${badgeClass(a.alert_type)}">${alertLabel(a.alert_type)}</span>
+    const canTrade = typeof openQuickTrade === 'function';
+    feed.innerHTML = alerts.map(a => {
+      let actions = '';
+      if (a.alert_type === 'approval_request' && a.trade_id) {
+        actions = `<button class="btn-primary btn-sm" onclick="approveTrade('${a.trade_id}')">Approve</button>
+                   <button class="btn-danger btn-sm" onclick="rejectTrade('${a.trade_id}')">Reject</button>`;
+      } else if (a.alert_type === 'market_wave' && a.ticker) {
+        actions = canTrade
+          ? `<button class="btn-primary btn-sm" onclick="openQuickTrade('${a.ticker}','buy',null)">Buy</button>
+             <button class="btn-danger btn-sm" onclick="openQuickTrade('${a.ticker}','sell',null)">Sell</button>
+             <button class="btn-sm" onclick="ackAlert('${a.id}')">Dismiss</button>`
+          : `<button class="btn-sm" onclick="ackAlert('${a.id}')">Dismiss</button>`;
+      } else if (a.alert_type === 'mirror_trade' && a.ticker) {
+        actions = canTrade
+          ? `<button class="btn-primary btn-sm" onclick="openQuickTrade('${a.ticker}','buy',null)">Mirror buy</button>
+             <button class="btn-sm" onclick="ackAlert('${a.id}')">Skip</button>`
+          : `<button class="btn-sm" onclick="ackAlert('${a.id}')">Dismiss</button>`;
+      } else {
+        actions = `<button class="btn-sm" onclick="ackAlert('${a.id}')">Dismiss</button>`;
+      }
+      return `
+        <div class="signal-card" data-severity="${a.severity}">
+          <div class="signal-top">
+            <div>
+              ${a.ticker ? `<span class="signal-ticker">${a.ticker}</span>` : ''}
+              <span class="badge ${badgeClass(a.alert_type)}">${alertLabel(a.alert_type)}</span>
+            </div>
+            <span class="signal-time">${timeAgo(a.created_at)}</span>
           </div>
-          <span class="signal-time">${timeAgo(a.created_at)}</span>
-        </div>
-        <p class="signal-body">${a.message}</p>
-        <div class="signal-actions">
-          ${a.alert_type === 'approval_request' && a.trade_id
-            ? `<button class="btn-primary btn-sm" onclick="approveTrade('${a.trade_id}')">Approve</button>
-               <button class="btn-danger btn-sm" onclick="rejectTrade('${a.trade_id}')">Reject</button>`
-            : `<button class="btn-sm" onclick="ackAlert('${a.id}')">Dismiss</button>`
-          }
-        </div>
-      </div>
-    `).join('');
+          <p class="signal-body">${a.message}</p>
+          <div class="signal-actions">${actions}</div>
+        </div>`;
+    }).join('');
   } catch (e) { console.error('loadAlerts:', e); }
 }
 
@@ -172,11 +193,27 @@ async function rejectTrade(id) {
   await loadAlerts();
 }
 
-// Watchlist
+// Watchlist — updates both sidebar widget (#watchlist-widget) and full table (#watchlist-tbody)
 async function loadWatchlist() {
   try {
     const res = await fetch('/api/watchlist');
+    if (!res.ok) { console.error('loadWatchlist HTTP', res.status); return; }
     const rows = await res.json();
+
+    // Detect whether live prices came back
+    const hasLivePrices = rows.some(r => r.price != null);
+    const statusEl = document.getElementById('watchlist-status');
+    if (statusEl) {
+      if (!hasLivePrices && rows.length > 0) {
+        statusEl.textContent = 'Connect Robinhood to see live prices.';
+        statusEl.style.color = 'var(--amber)';
+      } else if (hasLivePrices) {
+        const t = new Date().toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+        statusEl.textContent = 'Live · updated ' + t;
+        statusEl.style.color = 'var(--text-3)';
+      }
+    }
+
     const widget = document.getElementById('watchlist-widget');
     if (widget) {
       widget.innerHTML = rows.length === 0
@@ -185,24 +222,26 @@ async function loadWatchlist() {
           <div class="watch-row">
             <span class="watch-ticker">${r.ticker}</span>
             <div class="watch-right">
-              <span class="watch-price">${r.price ? '$'+r.price.toFixed(2) : '—'}</span>
-              <span class="watch-chg ${(r.change_pct || 0) >= 0 ? 'positive' : 'negative'}">${r.change_pct != null ? (r.change_pct >= 0 ? '+' : '')+r.change_pct.toFixed(1)+'%' : '—'}</span>
+              <span class="watch-price">${r.price != null ? '$'+r.price.toFixed(2) : '—'}</span>
+              <span class="watch-chg ${(r.change_pct || 0) >= 0 ? 'positive' : 'negative'}">${r.change_pct != null ? (r.change_pct >= 0 ? '+' : '')+r.change_pct.toFixed(1)+'%' : ''}</span>
             </div>
           </div>
         `).join('');
     }
     const tbody = document.getElementById('watchlist-tbody');
     if (tbody) {
-      tbody.innerHTML = rows.map(r => `
-        <tr>
-          <td><strong>${r.ticker}</strong></td>
-          <td style="color:var(--text-2)">${r.notes || '—'}</td>
-          <td style="color:var(--text-3)">${formatDate(r.added_at)}</td>
-          <td>${r.price ? '$'+r.price.toFixed(2) : '—'}</td>
-          <td class="${(r.change_pct || 0) >= 0 ? 'positive' : 'negative'}">${r.change_pct != null ? (r.change_pct >= 0 ? '+' : '')+r.change_pct.toFixed(1)+'%' : '—'}</td>
-          <td><button class="btn-remove" onclick="removeFromWatchlist('${r.ticker}')">Remove</button></td>
-        </tr>
-      `).join('');
+      tbody.innerHTML = rows.length === 0
+        ? '<tr><td colspan="6" style="color:var(--text-3);text-align:center;padding:20px">No tickers yet. Add one above.</td></tr>'
+        : rows.map(r => `
+          <tr>
+            <td><strong>${r.ticker}</strong></td>
+            <td style="color:var(--text-2)">${r.notes || '—'}</td>
+            <td style="color:var(--text-3)">${formatDate(r.added_at)}</td>
+            <td>${r.price != null ? '$'+r.price.toFixed(2) : '—'}</td>
+            <td class="${(r.change_pct || 0) >= 0 ? 'positive' : 'negative'}">${r.change_pct != null ? (r.change_pct >= 0 ? '+' : '')+r.change_pct.toFixed(1)+'%' : '—'}</td>
+            <td><button class="btn-remove" onclick="removeFromWatchlist('${r.ticker}')">Remove</button></td>
+          </tr>
+        `).join('');
     }
   } catch (e) { console.error('loadWatchlist:', e); }
 }
@@ -231,11 +270,84 @@ async function removeFromWatchlist(ticker) {
   await loadWatchlist();
 }
 
+// Toggle the search form — works on both dashboard sidebar (#watch-search-wrap) and watchlist page
 function showAddWatch() {
-  const form = document.getElementById('add-watch-form');
-  if (form) form.style.display = form.style.display === 'none' ? 'flex' : 'none';
+  const wrap = document.getElementById('watch-search-wrap');
+  if (!wrap) return;
+  const open = wrap.style.display === 'none' || wrap.style.display === '';
+  wrap.style.display = open ? 'block' : 'none';
+  if (open) {
+    const inp = document.getElementById('watch-search-input');
+    if (inp) inp.focus();
+  }
 }
-function showAddWatchModal() { showAddWatch(); }
+
+function showAddBlock() {
+  const wrap = document.getElementById('block-search-wrap');
+  if (!wrap) return;
+  const open = wrap.style.display === 'none' || wrap.style.display === '';
+  wrap.style.display = open ? 'block' : 'none';
+  if (open) {
+    const inp = document.getElementById('block-search-input');
+    if (inp) inp.focus();
+  }
+}
+
+// Ticker search — shared by watchlist + blocklist search dropdowns
+let _searchTimer = null;
+async function onTickerSearch(q, target) {
+  clearTimeout(_searchTimer);
+  const dropdown = document.getElementById(target + '-search-dropdown');
+  if (!dropdown) return;
+  if (!q || q.length < 1) { dropdown.innerHTML = ''; return; }
+  _searchTimer = setTimeout(async () => {
+    try {
+      const res = await fetch('/api/search?q=' + encodeURIComponent(q));
+      const items = await res.json();
+      dropdown.innerHTML = items.map(i => `
+        <div class="search-result" onclick="selectTicker('${i.symbol}','${(i.name||'').replace(/'/g,"\\'")}','${target}')">
+          <strong>${i.symbol}</strong> <span>${i.name || ''}</span>
+        </div>
+      `).join('') || '<div class="search-result" style="color:var(--text-3)">No results</div>';
+    } catch (e) { console.error('onTickerSearch:', e); }
+  }, 250);
+}
+
+function selectTicker(symbol, name, target) {
+  if (target === 'watch') {
+    addToWatchlistDirect(symbol);
+  } else {
+    addToBlocklistDirect(symbol);
+  }
+  const inp = document.getElementById(target + '-search-input');
+  const dd = document.getElementById(target + '-search-dropdown');
+  const wrap = document.getElementById(target + '-search-wrap');
+  if (inp) inp.value = '';
+  if (dd) dd.innerHTML = '';
+  if (wrap) wrap.style.display = 'none';
+}
+
+async function addToWatchlistDirect(ticker) {
+  const notes = document.getElementById('watch-notes')?.value || '';
+  const res = await fetch('/api/watchlist', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ticker, notes})
+  });
+  if (res.status === 409) { alert(ticker + ' is already on your watchlist.'); }
+  await loadWatchlist();
+}
+
+async function addToBlocklistDirect(ticker) {
+  const reason = document.getElementById('block-reason')?.value || '';
+  const res = await fetch('/api/blocklist', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ticker, reason})
+  });
+  if (res.status === 409) { alert(ticker + ' is already on your Don\'t Buy list.'); }
+  await loadBlocklist();
+}
 
 // Blocklist
 async function loadBlocklist() {
@@ -245,10 +357,10 @@ async function loadBlocklist() {
     const widget = document.getElementById('blocklist-widget');
     if (widget) {
       widget.innerHTML = rows.map(r => `
-        <span class="pill pill-red">${r.ticker}
+        <span class="pill pill-red" title="${r.reason || ''}">${r.ticker}
           <button onclick="removeBlock('${r.ticker}')" aria-label="Remove ${r.ticker}">×</button>
         </span>
-      `).join('') + '<button class="add-pill" onclick="promptAddBlock()">+ add</button>';
+      `).join('');
     }
   } catch (e) { console.error('loadBlocklist:', e); }
 }
@@ -258,19 +370,7 @@ async function removeBlock(ticker) {
   await loadBlocklist();
 }
 
-async function promptAddBlock() {
-  const ticker = prompt('Ticker to never buy:');
-  if (!ticker) return;
-  const reason = prompt('Reason (optional):') || '';
-  await fetch('/api/blocklist', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ticker: ticker.trim().toUpperCase(), reason})
-  });
-  await loadBlocklist();
-}
-
-// Mirrors
+// Mirrors — renders full mirror list on the mirrors page (#mirrors-list)
 async function loadMirrors() {
   try {
     const res = await fetch('/api/mirrors');
@@ -305,10 +405,6 @@ async function loadMirrors() {
         </div>
       `).join('');
     }
-    mirrors.forEach(m => {
-      const widget = document.getElementById(`mirror-last-${m.slug}`);
-      if (widget && m.last_checked_at) widget.textContent = 'Last: ' + formatDate(m.last_checked_at);
-    });
   } catch (e) { console.error('loadMirrors:', e); }
 }
 
@@ -382,31 +478,44 @@ function setSeg(knobKey, value, btn) {
   saveKnob(knobKey, value);
 }
 
-// Last report
-async function loadLastReport() {
+// Reports — renders list on the reports page (#reports-list)
+async function loadReports() {
+  const container = document.getElementById('reports-list');
+  if (!container) return;
   try {
-    const res = await fetch('/api/reports/last');
-    if (!res.ok) return;
-    const r = await res.json();
-    if (!r.id) return;
-    const titleEl = document.getElementById('report-title');
-    const subEl = document.getElementById('report-sub');
-    const bodyEl = document.getElementById('report-body');
-    const pnlEl = document.getElementById('report-pnl');
-    const dateEl = document.getElementById('report-date');
-    if (titleEl) titleEl.textContent = r.title || '—';
-    if (subEl) subEl.textContent = r.report_type ? r.report_type.charAt(0).toUpperCase() + r.report_type.slice(1) + ' report' : '—';
-    if (bodyEl) bodyEl.textContent = r.summary || '—';
-    if (dateEl && r.created_at) dateEl.textContent = formatDate(r.created_at);
-    if (pnlEl && r.pnl_pct != null) {
-      pnlEl.textContent = (r.pnl_pct >= 0 ? '+' : '') + r.pnl_pct.toFixed(1) + '%';
-      pnlEl.className = 'badge ' + (r.pnl_pct >= 0 ? 'badge-green' : 'badge-red');
+    const res = await fetch('/api/reports');
+    const reports = await res.json();
+    if (!reports.length) {
+      container.innerHTML = '<div class="card" style="padding:24px;text-align:center;color:var(--text-3)">No reports yet. Reports are generated automatically based on your <a href="/settings" style="color:var(--blue)">report settings</a>.</div>';
+      return;
     }
-  } catch (e) { /* no reports yet, silent */ }
+    container.innerHTML = reports.map(r => `
+      <div class="report-card card" onclick="toggleReport(this)">
+        <div class="report-top">
+          <div>
+            <span class="report-title-text">${r.title || 'Report'}</span>
+            <span class="badge ${r.report_type === 'weekly' ? 'badge-blue' : 'badge-purple'}" style="margin-left:8px">${r.report_type === 'weekly' ? 'Weekly' : 'Daily'}</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            ${r.pnl_pct != null ? `<span class="badge ${r.pnl_pct >= 0 ? 'badge-green' : 'badge-red'}">${r.pnl_pct >= 0 ? '+' : ''}${r.pnl_pct.toFixed(1)}%</span>` : ''}
+            <span style="font-size:12px;color:var(--text-3)">${formatDate(r.created_at)}</span>
+            <span class="report-chevron" style="font-size:12px;color:var(--text-3)">▼</span>
+          </div>
+        </div>
+        <div class="report-body" style="display:none">${r.summary || ''}</div>
+      </div>
+    `).join('');
+  } catch (e) {
+    container.innerHTML = '<div class="card" style="padding:24px;color:var(--red)">Failed to load reports.</div>';
+  }
 }
 
-async function requestFullReport() {
-  alert('Full report generation is queued — check back in a moment.');
+function toggleReport(card) {
+  const body = card.querySelector('.report-body');
+  const chevron = card.querySelector('.report-chevron');
+  const open = body.style.display === 'none';
+  body.style.display = open ? 'block' : 'none';
+  if (chevron) chevron.textContent = open ? '▲' : '▼';
 }
 
 async function refreshSignals() { await loadAlerts(); }

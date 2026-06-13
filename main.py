@@ -31,7 +31,7 @@ DEFAULT_KNOBS = {
     "max_position_pct": 20,
     "max_trades_per_day": 5,
     "daily_loss_halt_pct": 3,
-    "report_frequency": "weekly",
+    "report_frequency": "off",
     "report_weekly_day": "Friday",
     "report_delivery": "email",
     "report_depth": "brief",
@@ -83,17 +83,20 @@ def seed_defaults() -> None:
 
     db = SessionLocal()
     try:
-        count = db.query(ConfigKnob).count()
-        if count == 0:
-            logger.info("Seeding default config knobs")
-            for key, value in DEFAULT_KNOBS.items():
-                row = ConfigKnob(
+        # Insert defaults only for keys that don't exist yet — never overwrite user changes
+        added = 0
+        for key, value in DEFAULT_KNOBS.items():
+            exists = db.query(ConfigKnob).filter(ConfigKnob.key == key).first()
+            if not exists:
+                db.add(ConfigKnob(
                     id=str(uuid.uuid4()),
                     key=key,
                     value=json.dumps(value),
                     updated_at=datetime.utcnow(),
-                )
-                db.add(row)
+                ))
+                added += 1
+        if added:
+            logger.info("Seeded %d missing config knob(s)", added)
             db.commit()
 
         for seed in MIRROR_SEEDS:

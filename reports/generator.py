@@ -27,6 +27,15 @@ def generate_report(report_type: str = "weekly") -> Report | None:
             .order_by(Trade.created_at.desc())
             .all()
         )
+        if not trades:
+            logger.info("No executed trades in period — skipping %s report", report_type)
+            return None
+        trades = (
+            db.query(Trade)
+            .filter(Trade.created_at >= cutoff, Trade.status == "executed")
+            .order_by(Trade.created_at.desc())
+            .all()
+        )
 
         trade_lines = []
         for t in trades:

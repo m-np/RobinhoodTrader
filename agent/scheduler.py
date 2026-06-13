@@ -29,9 +29,37 @@ def _get_mcp() -> RobinhoodMCPClient:
 
 def _run_agent():
     try:
-        run_agent_cycle(mcp_client=_get_mcp())
+        mcp = _get_mcp()
+        run_agent_cycle(mcp_client=mcp)
+        _save_portfolio_snapshot(mcp)
     except Exception as e:
         logger.exception("Agent cycle error: %s", e)
+
+
+def _save_portfolio_snapshot(mcp: RobinhoodMCPClient) -> None:
+    """Capture a portfolio snapshot after each agent cycle for the time-series chart."""
+    try:
+        import uuid as _uuid
+        from datetime import datetime as _dt
+        from db.models import PortfolioSnapshot
+        from db.session import SessionLocal
+        portfolio = mcp.get_portfolio()
+        if portfolio.get("total_value", 0) <= 0:
+            return
+        db = SessionLocal()
+        try:
+            db.add(PortfolioSnapshot(
+                id=str(_uuid.uuid4()),
+                total_value=portfolio["total_value"],
+                equity_value=portfolio.get("equity_value", 0.0),
+                cash=portfolio.get("cash", 0.0),
+                created_at=_dt.utcnow(),
+            ))
+            db.commit()
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("Portfolio snapshot failed: %s", e)
 
 
 def _run_market_waves():
@@ -42,7 +70,7 @@ def _run_market_waves():
 
 
 def _run_daily_report():
-    freq = get_knob("report_frequency", "weekly")
+    freq = get_knob("report_frequency", "off")
     if freq in ("daily", "both"):
         try:
             generate_report(report_type="daily")
@@ -51,7 +79,7 @@ def _run_daily_report():
 
 
 def _run_weekly_report():
-    freq = get_knob("report_frequency", "weekly")
+    freq = get_knob("report_frequency", "off")
     if freq in ("weekly", "both"):
         try:
             generate_report(report_type="weekly")

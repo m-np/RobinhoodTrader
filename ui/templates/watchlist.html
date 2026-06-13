@@ -2,16 +2,27 @@
 {% block title %}Watchlist — Agentic trader{% endblock %}
 
 {% block content %}
-<div class="page-header">
-  <h1 class="page-title">Watchlist</h1>
-  <button class="btn" onclick="showAddWatchModal()">+ Add ticker</button>
+<div class="connect-banner" id="connect-banner" style="display:none">
+  <span>🔌 Robinhood not connected — live prices unavailable.</span>
+  <a href="/auth/robinhood" class="btn-sm">Connect Robinhood</a>
 </div>
 
-<div class="inline-form" id="add-watch-form" style="display:none">
-  <input type="text" id="new-ticker" placeholder="Ticker (e.g. AAPL)" maxlength="10">
-  <input type="text" id="new-notes" placeholder="Notes (optional)">
-  <button class="btn-primary" onclick="addToWatchlist()">Add</button>
-  <button class="btn" onclick="document.getElementById('add-watch-form').style.display='none'">Cancel</button>
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Watchlist</h1>
+    <p class="page-sub" id="watchlist-status">Prices update every 30 seconds.</p>
+  </div>
+  <button class="btn" onclick="showAddWatch()">+ Add ticker</button>
+</div>
+
+<!-- Search-by-company/ticker form -->
+<div id="watch-search-wrap" class="ticker-search-wrap" style="display:none;margin-bottom:16px">
+  <input type="text" id="watch-search-input" placeholder="Search company or ticker…" oninput="onTickerSearch(this.value,'watch')" autocomplete="off" style="width:100%">
+  <div class="search-dropdown" id="watch-search-dropdown"></div>
+  <div style="display:flex;gap:8px;margin-top:8px">
+    <input type="text" id="watch-notes" placeholder="Notes (optional)" style="flex:1">
+    <button class="btn" onclick="showAddWatch()">Cancel</button>
+  </div>
 </div>
 
 <div class="card" id="watchlist-table">

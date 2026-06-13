@@ -58,6 +58,11 @@ async def settings_page(request: Request):
     return templates.TemplateResponse(request, "settings.html", {"active": "settings"})
 
 
+@router.get("/reports", response_class=HTMLResponse)
+async def reports_page(request: Request):
+    return templates.TemplateResponse(request, "reports.html", {"active": "reports"})
+
+
 # ── Portfolio / wallet ───────────────────────────────────────────────────────
 
 @router.get("/api/portfolio")
@@ -82,6 +87,118 @@ async def api_wallet():
     mcp = _get_mcp()
     balance = mcp.get_wallet_balance()
     return {"balance": balance}
+
+
+@router.get("/api/portfolio/history")
+async def api_portfolio_history(period: str = "7d", db: Session = Depends(get_db)):
+    """Time-series snapshots for the portfolio chart. period: 1d | 7d | 30d | 90d"""
+    from db.models import PortfolioSnapshot
+    days = {"1d": 1, "7d": 7, "30d": 30, "90d": 90}.get(period, 7)
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    rows = (
+        db.query(PortfolioSnapshot)
+        .filter(PortfolioSnapshot.created_at >= cutoff)
+        .order_by(PortfolioSnapshot.created_at)
+        .all()
+    )
+    return [
+        {
+            "ts": r.created_at.isoformat() + "Z",
+            "total_value": r.total_value,
+            "equity_value": r.equity_value,
+            "cash": r.cash,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/api/search")
+async def api_search(q: str = ""):
+    """Search tickers/companies via Robinhood MCP."""
+    if not q or len(q) < 1:
+        return []
+    mcp = _get_mcp()
+    try:
+        result = mcp._call("search", {"query": q, "asset_type": "equity", "limit": 8})
+        items = result.get("data", {}).get("results", result.get("results", []))
+        return [
+            {
+                "symbol": i.get("symbol", i.get("ticker", "")),
+                "name": i.get("name", i.get("simple_name", i.get("symbol", ""))),
+                "type": i.get("type", "equity"),
+            }
+            for i in items
+            if i.get("symbol") or i.get("ticker")
+        ]
+    except Exception:
+        return []
+
+
+class QuickTradeInput(BaseModel):
+    ticker: str
+    action: str       # "buy" | "sell"
+    amount_usd: float = 0.0
+    quantity: float = 0.0
+    note: str = ""
+
+
+@router.post("/api/trades/quick")
+async def quick_trade(body: QuickTradeInput, db: Session = Depends(get_db)):
+    """Execute a quick buy/sell from a signal card."""
+    from agent.guardrails import GuardrailViolation, check_all
+    from agent.mcp_client import McpConnectionError
+    mcp = _get_mcp()
+    ticker = body.ticker.upper()
+
+    quote = mcp.get_quote(ticker)
+    price = quote.get("price") or 0.0
+    qty = body.quantity or ((body.amount_usd / price) if price else 0)
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="quantity or amount_usd required")
+
+    total_usd = price * qty
+    portfolio = mcp.get_portfolio()
+
+    trade = Trade(
+        id=str(uuid.uuid4()),
+        ticker=ticker,
+        action=body.action,
+        asset_class="stock",
+        quantity=qty,
+        price_usd=price,
+        total_usd=total_usd,
+        status="pending_approval",
+        rationale=body.note or f"Quick {body.action} from signal",
+        created_at=datetime.utcnow(),
+    )
+    db.add(trade)
+    db.commit()
+
+    try:
+        check_all(
+            ticker=ticker,
+            action=body.action,
+            asset_class="stock",
+            total_usd=total_usd,
+            portfolio=portfolio,
+            trade_id=trade.id,
+            notifier=None,
+        )
+    except GuardrailViolation as e:
+        trade.status = "rejected"
+        db.commit()
+        raise HTTPException(status_code=409, detail=str(e))
+
+    try:
+        mcp.place_order(ticker, body.action, qty, "stock")
+        trade.status = "executed"
+        trade.executed_at = datetime.utcnow()
+        db.commit()
+        return {"status": "executed", "trade_id": trade.id, "qty": qty, "price": price}
+    except McpConnectionError as e:
+        trade.status = "rejected"
+        db.commit()
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 # ── Trades ───────────────────────────────────────────────────────────────────
@@ -170,19 +287,21 @@ class WatchlistAdd(BaseModel):
 @router.get("/api/watchlist")
 async def api_watchlist(db: Session = Depends(get_db)):
     rows = db.query(Watchlist).order_by(Watchlist.added_at.desc()).all()
+    if not rows:
+        return []
     mcp = _get_mcp()
-    result = []
-    for r in rows:
-        quote = mcp.get_quote(r.ticker)
-        result.append({
+    quotes = mcp.get_quotes_batch([r.ticker for r in rows])
+    return [
+        {
             "id": r.id,
             "ticker": r.ticker,
             "notes": r.notes,
             "added_at": r.added_at.isoformat() if r.added_at else None,
-            "price": quote.get("price"),
-            "change_pct": quote.get("change_pct"),
-        })
-    return result
+            "price": quotes.get(r.ticker, {}).get("price"),
+            "change_pct": quotes.get(r.ticker, {}).get("change_pct"),
+        }
+        for r in rows
+    ]
 
 
 @router.post("/api/watchlist")
@@ -299,6 +418,23 @@ async def update_mirror(slug: str, body: MirrorUpdate, db: Session = Depends(get
 
 
 # ── Reports ───────────────────────────────────────────────────────────────────
+
+@router.get("/api/reports")
+async def api_reports(db: Session = Depends(get_db)):
+    rows = db.query(Report).order_by(Report.created_at.desc()).all()
+    return [
+        {
+            "id": r.id,
+            "title": r.title,
+            "summary": r.summary,
+            "pnl_usd": r.pnl_usd,
+            "pnl_pct": r.pnl_pct,
+            "report_type": r.report_type,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
 
 @router.get("/api/reports/last")
 async def api_last_report(db: Session = Depends(get_db)):

@@ -98,6 +98,18 @@ class Report(Base):
     created_at = Column(DateTime, default=_now, nullable=False)
 
 
+class PortfolioSnapshot(Base):
+    """Periodic snapshot of agentic account value — used for the time-series chart."""
+
+    __tablename__ = "portfolio_snapshots"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    total_value = Column(Float, nullable=False)
+    equity_value = Column(Float, nullable=False, default=0.0)
+    cash = Column(Float, nullable=False, default=0.0)
+    created_at = Column(DateTime, default=_now, nullable=False)
+
+
 class RobinhoodToken(Base):
     """Stores exactly one row — the current OAuth tokens, encrypted at rest."""
 

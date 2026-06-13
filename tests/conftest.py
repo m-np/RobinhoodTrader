@@ -33,7 +33,7 @@ def _isolate_live_db():
     will not log you out of Robinhood, will not add fake trades to your
     history, and will not leave stale alerts on the dashboard.
     """
-    from db.models import Alert, RobinhoodToken, Trade
+    from db.models import Alert, ConfigKnob, RobinhoodToken, Trade
     from db.session import SessionLocal
 
     def _snapshot(db, model):
@@ -54,6 +54,7 @@ def _isolate_live_db():
         tokens_snap = _snapshot(db, RobinhoodToken)
         trades_snap = _snapshot(db, Trade)
         alerts_snap = _snapshot(db, Alert)
+        knobs_snap = _snapshot(db, ConfigKnob)
     finally:
         db.close()
 
@@ -64,5 +65,6 @@ def _isolate_live_db():
         _restore(db, RobinhoodToken, tokens_snap)
         _restore(db, Trade, trades_snap)
         _restore(db, Alert, alerts_snap)
+        _restore(db, ConfigKnob, knobs_snap)
     finally:
         db.close()

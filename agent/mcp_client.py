@@ -278,6 +278,52 @@ class RobinhoodMCPClient:
         except McpConnectionError:
             return 0.0
 
+    def get_quotes_batch(self, tickers: list) -> dict:
+        """Live prices for multiple tickers in one MCP call.
+
+        Mirrors the exact approach used inside get_portfolio() so it runs with
+        the same account context and response-parsing logic.
+        Returns {TICKER: {price, change_pct}} for each ticker found.
+        Missing or failed tickers get {price: None, change_pct: None}.
+        """
+        if not tickers:
+            return {}
+        upper = [t.upper() for t in tickers]
+        empty = {t: {"price": None, "change_pct": None} for t in upper}
+        try:
+            # Resolve agentic account first — same prerequisite as get_portfolio().
+            # This establishes the full MCP session context before calling quotes.
+            acct = self._get_agentic_account()
+            result = self._call(
+                "get_equity_quotes",
+                {"symbols": upper, "account_number": acct},
+            )
+            # Use the same parsing path as get_portfolio()
+            items = result.get("data", {}).get("results", [])
+            quotes = dict(empty)
+            for item in items:
+                q = item.get("quote", {})
+                sym = q.get("symbol", "").upper()
+                if not sym:
+                    continue
+                price = _f(q.get("last_trade_price")) or _f(q.get("last_non_reg_trade_price"))
+                prev = _f(q.get("adjusted_previous_close")) or _f(q.get("previous_close"))
+                change_pct = ((price - prev) / prev * 100) if price and prev and prev != 0 else None
+                quotes[sym] = {
+                    "price": price,
+                    "change_pct": round(change_pct, 2) if change_pct is not None else None,
+                }
+            # If batch returned nothing, fall back to individual calls
+            if not any(v["price"] is not None for v in quotes.values()):
+                logger.warning("get_quotes_batch: batch returned no prices, falling back to individual calls")
+                for t in upper:
+                    q = self.get_quote(t)
+                    quotes[t] = {"price": q.get("price"), "change_pct": q.get("change_pct")}
+            return quotes
+        except Exception as e:
+            logger.warning("get_quotes_batch failed: %s", e)
+            return empty
+
     def get_quote(self, ticker: str) -> dict:
         """Live price and daily change % for a ticker."""
         try:
