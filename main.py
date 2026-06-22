@@ -13,9 +13,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
+from api.routes import router
 from config import settings
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 DEFAULT_KNOBS = {
@@ -44,16 +48,17 @@ DEFAULT_KNOBS = {
     "mirror_auto_execute": False,
     "notify_email": "",
     "notify_phone": "",
+    "discover_enabled": True,
 }
 
 MIRROR_SEEDS = [
-    {"name": "Nancy Pelosi", "slug": "nancy_pelosi", "source_type": "congressional"},
-    {"name": "Dan Crenshaw", "slug": "dan_crenshaw", "source_type": "congressional"},
-    {"name": "Tommy Tuberville", "slug": "tommy_tuberville", "source_type": "congressional"},
-    {"name": "Austin Scott", "slug": "austin_scott", "source_type": "congressional"},
-    {"name": "Berkshire Hathaway", "slug": "berkshire_hathaway", "source_type": "institutional"},
-    {"name": "Soros Fund Management", "slug": "soros_fund", "source_type": "institutional"},
-    {"name": "Renaissance Technologies", "slug": "renaissance_tech", "source_type": "institutional"},
+    {"name": "Nancy Pelosi",        "slug": "nancy_pelosi",      "source_type": "congressional"},
+    {"name": "Dan Crenshaw",        "slug": "dan_crenshaw",      "source_type": "congressional"},
+    {"name": "Tommy Tuberville",    "slug": "tommy_tuberville",  "source_type": "congressional"},
+    {"name": "Austin Scott",        "slug": "austin_scott",      "source_type": "congressional"},
+    {"name": "Berkshire Hathaway",  "slug": "berkshire_hathaway","source_type": "institutional"},
+    {"name": "Soros Fund Management","slug": "soros_fund",       "source_type": "institutional"},
+    {"name": "Renaissance Technologies","slug": "renaissance_tech","source_type": "institutional"},
 ]
 
 
@@ -90,7 +95,7 @@ def seed_defaults() -> None:
 
     db = SessionLocal()
     try:
-        # Insert defaults only for keys that don't exist yet — never overwrite user changes
+        # Insert defaults only for missing keys — never overwrite user changes
         added = 0
         for key, value in DEFAULT_KNOBS.items():
             exists = db.query(ConfigKnob).filter(ConfigKnob.key == key).first()
@@ -107,7 +112,11 @@ def seed_defaults() -> None:
             db.commit()
 
         for seed in MIRROR_SEEDS:
-            exists = db.query(MirrorSource).filter(MirrorSource.slug == seed["slug"]).first()
+            exists = (
+                db.query(MirrorSource)
+                .filter(MirrorSource.slug == seed["slug"])
+                .first()
+            )
             if not exists:
                 source = MirrorSource(
                     id=str(uuid.uuid4()),
@@ -164,8 +173,6 @@ async def basic_auth_middleware(request: Request, call_next):
 
 
 app.mount("/static", StaticFiles(directory="ui/static"), name="static")
-
-from api.routes import router
 app.include_router(router)
 
 

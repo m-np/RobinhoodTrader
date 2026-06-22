@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}Discover — Agentic trader{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Discover</h1>
+    <p class="page-sub">Stocks surfaced from investor community signals and market trends.</p>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <span class="field-label" id="discover-status">Loading…</span>
+    <button class="btn" onclick="triggerDiscovery(this)">Scan now</button>
+  </div>
+</div>
+
+<div id="serper-hint" class="discover-hint" style="display:none">
+  <strong>Google search not configured.</strong>
+  Add <code>SERPER_API_KEY</code> to <code>.env</code> for richer investor community signals
+  (<a href="https://serper.dev" target="_blank" rel="noopener">serper.dev</a> — free tier available).
+  Discovery still runs using Robinhood trending data.
+</div>
+
+<div id="discover-empty" style="display:none" class="empty-state">
+  <p>No discoveries yet. Click <strong>Scan now</strong> to run the first search,
+  or wait for the automatic scan at 9:35 AM ET on weekdays.</p>
+</div>
+
+<div id="discover-grid" class="discover-grid"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CONF_COLOR = {
+  high:        { bg: 'var(--green-bg)',  fg: 'var(--green)'  },
+  medium:      { bg: 'var(--blue-bg)',   fg: 'var(--blue)'   },
+  speculative: { bg: 'var(--amber-bg)',  fg: 'var(--amber)'  },
+};
+const CAT_LABEL = {
+  momentum:     'Momentum',
+  analyst_pick: 'Analyst pick',
+  emerging:     'Emerging',
+  value:        'Value',
+};
+
+async function loadDiscoveries() {
+  try {
+    const res = await fetch('/api/discoveries');
+    const items = await res.json();
+
+    const grid = document.getElementById('discover-grid');
+    const empty = document.getElementById('discover-empty');
+    const status = document.getElementById('discover-status');
+
+    if (!items.length) {
+      grid.innerHTML = '';
+      empty.style.display = 'block';
+      status.textContent = 'No discoveries yet';
+      return;
+    }
+
+    empty.style.display = 'none';
+    const newest = new Date(items[0].created_at);
+    status.textContent = 'Last scanned ' + newest.toLocaleDateString('en-US', {
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+    });
+
+    grid.innerHTML = items.map(d => {
+      const conf = CONF_COLOR[d.confidence] || CONF_COLOR.medium;
+      const cat  = CAT_LABEL[d.category]  || d.category || 'Signal';
+      const age  = _reltime(d.created_at);
+      const addedCls = d.added_to_watchlist ? 'disc-btn-done' : 'disc-btn-add';
+      const addedTxt = d.added_to_watchlist ? 'On watchlist' : 'Watch';
+      return `
+<div class="disc-card" data-id="${d.id}">
+  <div class="disc-top">
+    <div class="disc-badges">
+      <span class="badge" style="background:${conf.bg};color:${conf.fg}">
+        ${d.confidence}
+      </span>
+      <span class="badge badge-blue">${cat}</span>
+    </div>
+    <span class="disc-age">${age}</span>
+  </div>
+  <div class="disc-ticker">${d.ticker}</div>
+  <div class="disc-company">${d.company_name || ''}</div>
+  <p class="disc-rationale">${d.rationale || ''}</p>
+  ${d.source_summary
+    ? `<div class="disc-source">📡 ${d.source_summary}</div>`
+    : ''}
+  <div class="disc-actions">
+    <button class="btn-primary disc-btn ${addedCls}"
+      ${d.added_to_watchlist ? 'disabled' : ''}
+      onclick="discAdd('${d.id}', this)">
+      ${addedTxt}
+    </button>
+    <button class="btn disc-btn"
+      onclick="discDismiss('${d.id}', this)">
+      Dismiss
+    </button>
+  </div>
+</div>`;
+    }).join('');
+  } catch (e) {
+    console.error('loadDiscoveries:', e);
+  }
+}
+
+function _reltime(iso) {
+  const diff = (Date.now() - new Date(iso)) / 1000;
+  if (diff < 3600)   return Math.round(diff / 60) + 'm ago';
+  if (diff < 86400)  return Math.round(diff / 3600) + 'h ago';
+  return Math.round(diff / 86400) + 'd ago';
+}
+
+async function discAdd(id, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Adding…';
+  const r = await fetch(`/api/discoveries/${id}/add`, { method: 'POST' });
+  const d = await r.json();
+  if (d.status === 'added') {
+    btn.textContent = 'On watchlist ✓';
+    btn.classList.add('disc-btn-done');
+  } else {
+    btn.textContent = 'Failed';
+    btn.disabled = false;
+  }
+}
+
+async function discDismiss(id, btn) {
+  const card = btn.closest('.disc-card');
+  card.style.opacity = '0';
+  card.style.maxHeight = '0';
+  card.style.overflow = 'hidden';
+  card.style.transition = 'opacity .35s, max-height .35s';
+  await fetch(`/api/discoveries/${id}/dismiss`, { method: 'POST' });
+  setTimeout(() => card.remove(), 380);
+}
+
+async function triggerDiscovery(btn) {
+  btn.disabled = true;
+  btn.textContent = 'Scanning…';
+  document.getElementById('discover-status').textContent = 'Scanning…';
+  await fetch('/api/discoveries/refresh', { method: 'POST' });
+  // Poll for results — scan runs in background (5–15 s)
+  let attempts = 0;
+  const poll = setInterval(async () => {
+    attempts++;
+    await loadDiscoveries();
+    if (attempts >= 8) {
+      clearInterval(poll);
+      btn.disabled = false;
+      btn.textContent = 'Scan now';
+    }
+  }, 3000);
+}
+
+// Check if Serper is configured (hint shown if not)
+(async function checkSerper() {
+  try {
+    const r = await fetch('/api/knobs');
+    // We can't check SERPER_API_KEY from frontend — show hint always
+    // unless discoveries already exist (means it worked)
+    const disc = await fetch('/api/discoveries');
+    const items = await disc.json();
+    if (!items.length) {
+      document.getElementById('serper-hint').style.display = 'block';
+    }
+  } catch {}
+})();
+
+loadDiscoveries();
+</script>
+{% endblock %}

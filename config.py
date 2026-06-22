@@ -11,10 +11,13 @@ class Settings(BaseSettings):
     ROBINHOOD_MCP_URL: str = "https://agent.robinhood.com/mcp/trading"
     ROBINHOOD_CLIENT_ID: str = ""
     ROBINHOOD_CLIENT_SECRET: str = ""
-    ROBINHOOD_REDIRECT_URI: str = "http://localhost:8000/auth/robinhood/callback"
+    ROBINHOOD_REDIRECT_URI: str = (
+        "http://localhost:8000/auth/robinhood/callback"
+    )
 
-    # Token encryption (Fernet key — generate with:
-    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+    # Token encryption — generate once with:
+    #   python -c "from cryptography.fernet import Fernet; \
+    #              print(Fernet.generate_key().decode())"
     ENCRYPTION_KEY: str = ""
 
     # Database
@@ -33,6 +36,10 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
 
+    # Stock discovery (Google search via Serper.dev — optional)
+    # Get a free/paid key at https://serper.dev
+    SERPER_API_KEY: str = ""
+
     # HTTP Basic Auth password for the dashboard (leave empty to disable)
     DASHBOARD_SECRET: str = ""
 
@@ -48,4 +55,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-

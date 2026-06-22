@@ -122,6 +122,23 @@ class WatchlistPriceSnapshot(Base):
     recorded_at = Column(DateTime, default=_now, nullable=False)
 
 
+class StockDiscovery(Base):
+    """A stock surfaced by the discovery engine as worth investigating."""
+
+    __tablename__ = "stock_discoveries"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    ticker = Column(String, nullable=False)
+    company_name = Column(String, nullable=True)
+    rationale = Column(Text, nullable=True)        # Claude's explanation
+    category = Column(String, nullable=True)        # momentum / analyst_pick / emerging / value
+    confidence = Column(String, nullable=True)      # high / medium / speculative
+    source_summary = Column(String, nullable=True)  # brief label of what data surfaced this
+    dismissed = Column(Boolean, default=False, nullable=False)
+    added_to_watchlist = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=_now, nullable=False)
+
+
 class RobinhoodToken(Base):
     """Stores exactly one row — the current OAuth tokens, encrypted at rest."""
 

@@ -205,27 +205,33 @@ async function loadAlerts() {
       let action, amount, context, primaryBtn, secondaryBtn;
 
       if (a.alert_type === 'approval_request') {
-        // Message format: "Trade requires your approval (reason): BUY AAPL · 3.5 shares @ $143.25 (~$500.38)"
-        const dirMatch = a.message.match(/:\s*(BUY|SELL)/i);
-        action = dirMatch ? dirMatch[1].toLowerCase() : 'buy';
+        action = a.action || (a.message.match(/:\s*(BUY|SELL)/i) || [])[1]?.toLowerCase() || 'buy';
 
-        // Quantity + price per share
-        const qtyMatch = a.message.match(/·\s*([\d.]+)\s*shares?\s*@\s*(\$[\d,.]+)/i);
-        // Fallback: just the total
-        const totalMatch = a.message.match(/\(~?(\$[\d,.]+)\)/);
-        if (qtyMatch) {
-          amount = `${qtyMatch[1]} shares @ ${qtyMatch[2]}`;
-          if (totalMatch) amount += ` · ${totalMatch[1]} total`;
-        } else if (totalMatch) {
-          amount = totalMatch[1];
+        // Use structured trade fields from API (no regex fragility)
+        if (a.quantity != null && a.price_usd != null) {
+          const qty = Number.isInteger(a.quantity)
+            ? a.quantity.toString()
+            : parseFloat(a.quantity.toFixed(6)).toString();
+          const price = '$' + a.price_usd.toLocaleString('en-US', {
+            minimumFractionDigits: 2, maximumFractionDigits: 2,
+          });
+          amount = `${qty} shares @ ${price}`;
+          if (a.total_usd != null) {
+            amount += ` · $${a.total_usd.toLocaleString('en-US', {
+              minimumFractionDigits: 2, maximumFractionDigits: 2,
+            })} total`;
+          }
         } else {
-          amount = '';
+          // Fallback: parse total from message text
+          const totalMatch = a.message.match(/~?\$?([\d,]+(?:\.\d+)?)\)?$/);
+          amount = totalMatch ? '$' + totalMatch[1] : '';
         }
 
-        // Reason from first parenthetical
+        // Reason from first parenthetical in message
         context = (a.message.match(/\(([^)]+)\)/) || [])[1] || 'agent recommendation';
 
-        primaryBtn = `<button class="decision-btn decision-btn-${action}" onclick="approveTrade('${a.trade_id}','${a.id}')">
+        primaryBtn = `<button class="decision-btn decision-btn-${action}"
+                        onclick="approveTrade('${a.trade_id}','${a.id}')">
                         ${action === 'sell' ? 'Approve sell' : 'Approve buy'}
                       </button>`;
         secondaryBtn = `<button class="btn-sm" onclick="rejectTrade('${a.trade_id}','${a.id}')">Reject</button>`;
@@ -257,7 +263,9 @@ async function loadAlerts() {
             <span class="decision-ticker">${a.ticker || ''}</span>
             <span class="signal-time" style="margin-left:auto">${timeAgo(a.created_at)}</span>
           </div>
-          ${amount ? `<p class="decision-amount">${amount}</p>` : ''}
+          ${amount
+            ? `<p class="decision-amount decision-amount-${action}">${amount}</p>`
+            : ''}
           <p class="decision-context">${context}</p>
           <div class="signal-actions">
             ${primaryBtn}

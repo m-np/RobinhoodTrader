@@ -2,6 +2,8 @@ import base64
 import hashlib
 import json
 import secrets
+import threading
+import time as _time
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -39,42 +41,62 @@ def _get_mcp() -> RobinhoodMCPClient:
     return _mcp
 
 
-# ── HTML pages ──────────────────────────────────────────────────────────────
+# ── HTML pages ────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    return templates.TemplateResponse(request, "dashboard.html", {"active": "dashboard"})
+    return templates.TemplateResponse(
+        request, "dashboard.html", {"active": "dashboard"}
+    )
 
 
 @router.get("/watchlist", response_class=HTMLResponse)
 async def watchlist_page(request: Request):
-    return templates.TemplateResponse(request, "watchlist.html", {"active": "watchlist"})
+    return templates.TemplateResponse(
+        request, "watchlist.html", {"active": "watchlist"}
+    )
 
 
 @router.get("/mirrors", response_class=HTMLResponse)
 async def mirrors_page(request: Request):
-    return templates.TemplateResponse(request, "mirrors.html", {"active": "mirrors"})
+    return templates.TemplateResponse(
+        request, "mirrors.html", {"active": "mirrors"}
+    )
 
 
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
-    return templates.TemplateResponse(request, "settings.html", {"active": "settings"})
+    return templates.TemplateResponse(
+        request, "settings.html", {"active": "settings"}
+    )
 
 
 @router.get("/reports", response_class=HTMLResponse)
 async def reports_page(request: Request):
-    return templates.TemplateResponse(request, "reports.html", {"active": "reports"})
+    return templates.TemplateResponse(
+        request, "reports.html", {"active": "reports"}
+    )
 
 
-# ── Portfolio / wallet ───────────────────────────────────────────────────────
+@router.get("/discover", response_class=HTMLResponse)
+async def discover_page(request: Request):
+    return templates.TemplateResponse(
+        request, "discover.html", {"active": "discover"}
+    )
+
+
+# ── Portfolio / wallet ────────────────────────────────────
 
 @router.get("/api/portfolio")
 async def api_portfolio(db: Session = Depends(get_db)):
     mcp = _get_mcp()
     portfolio = _enrich_today_pnl(mcp.get_portfolio())
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = datetime.utcnow().replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     trades_today = db.query(Trade).filter(
-        Trade.created_at >= today_start, Trade.status == "executed"
+        Trade.created_at >= today_start,
+        Trade.status == "executed",
     ).count()
     return {
         **portfolio,
@@ -93,8 +115,10 @@ async def api_wallet():
 
 
 @router.get("/api/portfolio/history")
-async def api_portfolio_history(period: str = "7d", db: Session = Depends(get_db)):
-    """Time-series snapshots for the portfolio chart. period: 1d | 7d | 30d | 90d"""
+async def api_portfolio_history(
+    period: str = "7d", db: Session = Depends(get_db)
+):
+    """Time-series snapshots for chart. period: 1d | 7d | 30d | 90d"""
     from db.models import PortfolioSnapshot
     days = {"1d": 1, "7d": 7, "30d": 30, "90d": 90}.get(period, 7)
     cutoff = datetime.utcnow() - timedelta(days=days)
@@ -122,12 +146,18 @@ async def api_search(q: str = ""):
         return []
     mcp = _get_mcp()
     try:
-        result = mcp._call("search", {"query": q, "asset_type": "equity", "limit": 8})
-        items = result.get("data", {}).get("results", result.get("results", []))
+        result = mcp._call(
+            "search", {"query": q, "asset_type": "equity", "limit": 8}
+        )
+        items = result.get(
+            "data", {}
+        ).get("results", result.get("results", []))
         return [
             {
                 "symbol": i.get("symbol", i.get("ticker", "")),
-                "name": i.get("name", i.get("simple_name", i.get("symbol", ""))),
+                "name": i.get(
+                    "name", i.get("simple_name", i.get("symbol", ""))
+                ),
                 "type": i.get("type", "equity"),
             }
             for i in items
@@ -146,7 +176,9 @@ class QuickTradeInput(BaseModel):
 
 
 @router.post("/api/trades/quick")
-async def quick_trade(body: QuickTradeInput, db: Session = Depends(get_db)):
+async def quick_trade(
+    body: QuickTradeInput, db: Session = Depends(get_db)
+):
     """Execute a quick buy/sell from a signal card."""
     from agent.mcp_client import McpConnectionError
     mcp = _get_mcp()
@@ -156,7 +188,10 @@ async def quick_trade(body: QuickTradeInput, db: Session = Depends(get_db)):
     price = quote.get("price") or 0.0
     qty = body.quantity or ((body.amount_usd / price) if price else 0)
     if qty <= 0:
-        raise HTTPException(status_code=400, detail="quantity or amount_usd required")
+        raise HTTPException(
+            status_code=400,
+            detail="quantity or amount_usd required",
+        )
 
     total_usd = price * qty
     portfolio = mcp.get_portfolio()
@@ -216,11 +251,16 @@ async def quick_trade(body: QuickTradeInput, db: Session = Depends(get_db)):
         raise HTTPException(status_code=502, detail=str(e))
 
 
-# ── Trades ───────────────────────────────────────────────────────────────────
+# ── Trades ────────────────────────────────────────────────
 
 @router.get("/api/trades")
 async def api_trades(limit: int = 50, db: Session = Depends(get_db)):
-    rows = db.query(Trade).order_by(Trade.created_at.desc()).limit(limit).all()
+    rows = (
+        db.query(Trade)
+        .order_by(Trade.created_at.desc())
+        .limit(limit)
+        .all()
+    )
     return [
         {
             "id": t.id,
@@ -233,8 +273,12 @@ async def api_trades(limit: int = 50, db: Session = Depends(get_db)):
             "status": t.status,
             "rationale": t.rationale,
             "mirror_source": t.mirror_source,
-            "created_at": t.created_at.isoformat() if t.created_at else None,
-            "executed_at": t.executed_at.isoformat() if t.executed_at else None,
+            "created_at": (
+                t.created_at.isoformat() if t.created_at else None
+            ),
+            "executed_at": (
+                t.executed_at.isoformat() if t.executed_at else None
+            ),
         }
         for t in rows
     ]
@@ -259,12 +303,14 @@ async def reject_trade(trade_id: str, db: Session = Depends(get_db)):
     if not trade:
         raise HTTPException(status_code=404, detail="Trade not found")
     trade.status = "rejected"
-    db.query(Alert).filter(Alert.trade_id == trade_id).update({"acknowledged": True})
+    db.query(Alert).filter(Alert.trade_id == trade_id).update(
+        {"acknowledged": True}
+    )
     db.commit()
     return {"status": "rejected"}
 
 
-# ── Alerts ───────────────────────────────────────────────────────────────────
+# ── Alerts ────────────────────────────────────────────────
 
 @router.get("/api/alerts")
 async def api_alerts(db: Session = Depends(get_db)):
@@ -274,18 +320,34 @@ async def api_alerts(db: Session = Depends(get_db)):
         .order_by(Alert.created_at.desc())
         .all()
     )
-    return [
-        {
+    # Pre-fetch trade details so the frontend never needs to parse message text
+    trade_ids = [a.trade_id for a in rows if a.trade_id]
+    trades: dict = {}
+    if trade_ids:
+        for t in db.query(Trade).filter(Trade.id.in_(trade_ids)).all():
+            trades[t.id] = t
+
+    result = []
+    for a in rows:
+        item: dict = {
             "id": a.id,
             "ticker": a.ticker,
             "alert_type": a.alert_type,
             "message": a.message,
             "severity": a.severity,
             "trade_id": a.trade_id,
-            "created_at": a.created_at.isoformat() if a.created_at else None,
+            "created_at": (
+                a.created_at.isoformat() if a.created_at else None
+            ),
         }
-        for a in rows
-    ]
+        t = trades.get(a.trade_id) if a.trade_id else None
+        if t:
+            item["action"] = t.action
+            item["quantity"] = t.quantity
+            item["price_usd"] = t.price_usd
+            item["total_usd"] = t.total_usd
+        result.append(item)
+    return result
 
 
 @router.post("/api/alerts/{alert_id}/ack")
@@ -298,7 +360,7 @@ async def ack_alert(alert_id: str, db: Session = Depends(get_db)):
     return {"status": "acknowledged"}
 
 
-# ── Watchlist ─────────────────────────────────────────────────────────────────
+# ── Watchlist ─────────────────────────────────────────────
 
 class WatchlistAdd(BaseModel):
     ticker: str
@@ -307,11 +369,15 @@ class WatchlistAdd(BaseModel):
 
 @router.get("/api/watchlist")
 async def api_watchlist(db: Session = Depends(get_db)):
-    from agent.price_cache import get as cache_get, is_empty as cache_empty, update as cache_update
+    from agent.price_cache import (
+        get as cache_get,
+        is_empty as cache_empty,
+        update as cache_update,
+    )
     rows = db.query(Watchlist).order_by(Watchlist.added_at.desc()).all()
     if not rows:
         return []
-    # Cold-start fallback: populate cache on first request if scheduler hasn't run yet
+    # Cold-start: fill cache if scheduler hasn't run yet
     if cache_empty():
         quotes = _get_mcp().get_quotes_batch([r.ticker for r in rows])
         cache_update(quotes)
@@ -328,27 +394,40 @@ async def api_watchlist(db: Session = Depends(get_db)):
 
 
 @router.post("/api/watchlist")
-async def add_watchlist(body: WatchlistAdd, db: Session = Depends(get_db)):
+async def add_watchlist(
+    body: WatchlistAdd, db: Session = Depends(get_db)
+):
     ticker = body.ticker.upper().strip()
-    existing = db.query(Watchlist).filter(Watchlist.ticker == ticker).first()
+    existing = (
+        db.query(Watchlist).filter(Watchlist.ticker == ticker).first()
+    )
     if existing:
         raise HTTPException(status_code=409, detail="Already on watchlist")
-    row = Watchlist(id=str(uuid.uuid4()), ticker=ticker, notes=body.notes, added_at=datetime.utcnow())
-    db.add(row)
+    db.add(Watchlist(
+        id=str(uuid.uuid4()),
+        ticker=ticker,
+        notes=body.notes,
+        added_at=datetime.utcnow(),
+    ))
     db.commit()
     return {"status": "added", "ticker": ticker}
 
 
 @router.get("/api/watchlist/prices/history")
-async def api_watchlist_price_history(period: str = "1d", db: Session = Depends(get_db)):
-    """Price history for all watchlist tickers — used for sparklines. period: 1d | 7d | 30d"""
+async def api_watchlist_price_history(
+    period: str = "1d", db: Session = Depends(get_db)
+):
+    """Price history for sparklines. period: 1d | 7d | 30d"""
     from db.models import WatchlistPriceSnapshot
     days = {"1d": 1, "7d": 7, "30d": 30}.get(period, 1)
     cutoff = datetime.utcnow() - timedelta(days=days)
     rows = (
         db.query(WatchlistPriceSnapshot)
         .filter(WatchlistPriceSnapshot.recorded_at >= cutoff)
-        .order_by(WatchlistPriceSnapshot.ticker, WatchlistPriceSnapshot.recorded_at)
+        .order_by(
+            WatchlistPriceSnapshot.ticker,
+            WatchlistPriceSnapshot.recorded_at,
+        )
         .all()
     )
     result: dict = {}
@@ -362,7 +441,11 @@ async def api_watchlist_price_history(period: str = "1d", db: Session = Depends(
 
 @router.delete("/api/watchlist/{ticker}")
 async def remove_watchlist(ticker: str, db: Session = Depends(get_db)):
-    row = db.query(Watchlist).filter(Watchlist.ticker == ticker.upper()).first()
+    row = (
+        db.query(Watchlist)
+        .filter(Watchlist.ticker == ticker.upper())
+        .first()
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Not found")
     db.delete(row)
@@ -370,7 +453,7 @@ async def remove_watchlist(ticker: str, db: Session = Depends(get_db)):
     return {"status": "removed"}
 
 
-# ── Blocklist ─────────────────────────────────────────────────────────────────
+# ── Blocklist ─────────────────────────────────────────────
 
 class BlocklistAdd(BaseModel):
     ticker: str
@@ -380,24 +463,46 @@ class BlocklistAdd(BaseModel):
 @router.get("/api/blocklist")
 async def api_blocklist(db: Session = Depends(get_db)):
     rows = db.query(Blocklist).order_by(Blocklist.added_at.desc()).all()
-    return [{"id": r.id, "ticker": r.ticker, "reason": r.reason, "added_at": r.added_at.isoformat() if r.added_at else None} for r in rows]
+    return [
+        {
+            "id": r.id,
+            "ticker": r.ticker,
+            "reason": r.reason,
+            "added_at": r.added_at.isoformat() if r.added_at else None,
+        }
+        for r in rows
+    ]
 
 
 @router.post("/api/blocklist")
-async def add_blocklist(body: BlocklistAdd, db: Session = Depends(get_db)):
+async def add_blocklist(
+    body: BlocklistAdd, db: Session = Depends(get_db)
+):
     ticker = body.ticker.upper().strip()
-    existing = db.query(Blocklist).filter(Blocklist.ticker == ticker).first()
+    existing = (
+        db.query(Blocklist).filter(Blocklist.ticker == ticker).first()
+    )
     if existing:
         raise HTTPException(status_code=409, detail="Already on blocklist")
-    row = Blocklist(id=str(uuid.uuid4()), ticker=ticker, reason=body.reason, added_at=datetime.utcnow())
-    db.add(row)
+    db.add(Blocklist(
+        id=str(uuid.uuid4()),
+        ticker=ticker,
+        reason=body.reason,
+        added_at=datetime.utcnow(),
+    ))
     db.commit()
     return {"status": "added"}
 
 
 @router.delete("/api/blocklist/{ticker}")
-async def remove_blocklist(ticker: str, db: Session = Depends(get_db)):
-    row = db.query(Blocklist).filter(Blocklist.ticker == ticker.upper()).first()
+async def remove_blocklist(
+    ticker: str, db: Session = Depends(get_db)
+):
+    row = (
+        db.query(Blocklist)
+        .filter(Blocklist.ticker == ticker.upper())
+        .first()
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Not found")
     db.delete(row)
@@ -405,7 +510,7 @@ async def remove_blocklist(ticker: str, db: Session = Depends(get_db)):
     return {"status": "removed"}
 
 
-# ── Config knobs ──────────────────────────────────────────────────────────────
+# ── Config knobs ──────────────────────────────────────────
 
 class KnobUpdate(BaseModel):
     key: str
@@ -424,7 +529,7 @@ async def update_knob(body: KnobUpdate):
     return {"status": "updated", "key": body.key}
 
 
-# ── Mirror sources ────────────────────────────────────────────────────────────
+# ── Mirror sources ────────────────────────────────────────
 
 class MirrorUpdate(BaseModel):
     enabled: Optional[bool] = None
@@ -442,15 +547,24 @@ async def api_mirrors(db: Session = Depends(get_db)):
             "source_type": m.source_type,
             "enabled": m.enabled,
             "scale_factor": m.scale_factor,
-            "last_checked_at": m.last_checked_at.isoformat() if m.last_checked_at else None,
+            "last_checked_at": (
+                m.last_checked_at.isoformat()
+                if m.last_checked_at else None
+            ),
         }
         for m in rows
     ]
 
 
 @router.patch("/api/mirrors/{slug}")
-async def update_mirror(slug: str, body: MirrorUpdate, db: Session = Depends(get_db)):
-    mirror = db.query(MirrorSource).filter(MirrorSource.slug == slug).first()
+async def update_mirror(
+    slug: str, body: MirrorUpdate, db: Session = Depends(get_db)
+):
+    mirror = (
+        db.query(MirrorSource)
+        .filter(MirrorSource.slug == slug)
+        .first()
+    )
     if not mirror:
         raise HTTPException(status_code=404, detail="Mirror not found")
     if body.enabled is not None:
@@ -461,7 +575,7 @@ async def update_mirror(slug: str, body: MirrorUpdate, db: Session = Depends(get
     return {"status": "updated"}
 
 
-# ── Reports ───────────────────────────────────────────────────────────────────
+# ── Reports ───────────────────────────────────────────────
 
 @router.get("/api/reports")
 async def api_reports(db: Session = Depends(get_db)):
@@ -474,7 +588,9 @@ async def api_reports(db: Session = Depends(get_db)):
             "pnl_usd": r.pnl_usd,
             "pnl_pct": r.pnl_pct,
             "report_type": r.report_type,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "created_at": (
+                r.created_at.isoformat() if r.created_at else None
+            ),
         }
         for r in rows
     ]
@@ -492,11 +608,13 @@ async def api_last_report(db: Session = Depends(get_db)):
         "pnl_usd": report.pnl_usd,
         "pnl_pct": report.pnl_pct,
         "report_type": report.report_type,
-        "created_at": report.created_at.isoformat() if report.created_at else None,
+        "created_at": (
+            report.created_at.isoformat() if report.created_at else None
+        ),
     }
 
 
-# ── Notifications ─────────────────────────────────────────────────────────────
+# ── Notifications ─────────────────────────────────────────
 
 class NotifyConfigInput(BaseModel):
     notify_email: Optional[str] = None
@@ -509,11 +627,17 @@ class NotifyTestInput(BaseModel):
 
 @router.get("/api/notify/status")
 async def notify_status():
-    """Return whether SMTP/Twilio are configured and current recipient addresses."""
-    from notifications.notifier import _get_notify_email, _get_notify_phone
+    """SMTP/Twilio config status + current recipient addresses."""
+    from notifications.notifier import (
+        _get_notify_email, _get_notify_phone,
+    )
     return {
-        "smtp_configured": bool(settings.SMTP_USER and settings.SMTP_PASSWORD),
-        "twilio_configured": bool(settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN),
+        "smtp_configured": bool(
+            settings.SMTP_USER and settings.SMTP_PASSWORD
+        ),
+        "twilio_configured": bool(
+            settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN
+        ),
         "notify_email": _get_notify_email(),
         "notify_phone": _get_notify_phone(),
     }
@@ -541,22 +665,112 @@ async def notify_test(body: NotifyTestInput):
         ok = notifier.send_test_email()
         results["email"] = ok
         if not ok:
-            errors.append("Email failed — check SMTP credentials and recipient address")
+            errors.append(
+                "Email failed — check SMTP credentials and address"
+            )
 
     if body.type in ("sms", "both"):
         ok = notifier.send_test_sms()
         results["sms"] = ok
         if not ok:
-            errors.append("SMS failed — check Twilio credentials and phone number")
+            errors.append(
+                "SMS failed — check Twilio credentials and phone number"
+            )
 
     return {"results": results, "errors": errors}
 
 
-# ── Robinhood OAuth — PKCE + Dynamic Client Registration ─────────────────────
+# ── Stock discovery ───────────────────────────────────────
+
+@router.get("/api/discoveries")
+async def api_discoveries(db: Session = Depends(get_db)):
+    from db.models import StockDiscovery
+    rows = (
+        db.query(StockDiscovery)
+        .filter(StockDiscovery.dismissed.is_(False))
+        .order_by(StockDiscovery.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "ticker": r.ticker,
+            "company_name": r.company_name,
+            "rationale": r.rationale,
+            "category": r.category,
+            "confidence": r.confidence,
+            "source_summary": r.source_summary,
+            "added_to_watchlist": r.added_to_watchlist,
+            "created_at": (
+                r.created_at.isoformat() if r.created_at else None
+            ),
+        }
+        for r in rows
+    ]
+
+
+@router.post("/api/discoveries/{discovery_id}/add")
+async def discovery_add_to_watchlist(
+    discovery_id: str, db: Session = Depends(get_db)
+):
+    from db.models import StockDiscovery
+    disc = (
+        db.query(StockDiscovery)
+        .filter(StockDiscovery.id == discovery_id)
+        .first()
+    )
+    if not disc:
+        raise HTTPException(status_code=404, detail="Discovery not found")
+    ticker = disc.ticker.upper()
+    existing = (
+        db.query(Watchlist).filter(Watchlist.ticker == ticker).first()
+    )
+    if not existing:
+        db.add(Watchlist(
+            id=str(uuid.uuid4()),
+            ticker=ticker,
+            notes=f"Discovered: {disc.source_summary or ''}",
+            added_at=datetime.utcnow(),
+        ))
+    disc.added_to_watchlist = True
+    db.commit()
+    return {"status": "added", "ticker": ticker}
+
+
+@router.post("/api/discoveries/{discovery_id}/dismiss")
+async def discovery_dismiss(
+    discovery_id: str, db: Session = Depends(get_db)
+):
+    from db.models import StockDiscovery
+    disc = (
+        db.query(StockDiscovery)
+        .filter(StockDiscovery.id == discovery_id)
+        .first()
+    )
+    if not disc:
+        raise HTTPException(status_code=404, detail="Discovery not found")
+    disc.dismissed = True
+    db.commit()
+    return {"status": "dismissed"}
+
+
+@router.post("/api/discoveries/refresh")
+async def discovery_refresh():
+    """Trigger a new discovery run in the background."""
+    from discover.engine import check_and_run_discovery
+    mcp = _get_mcp()
+    threading.Thread(
+        target=check_and_run_discovery, args=(mcp,), daemon=True
+    ).start()
+    return {"status": "started"}
+
+
+# ── Robinhood OAuth — PKCE + Dynamic Client Registration ──
 #
-# Robinhood's MCP uses standard OAuth 2.0 with:
-#   - Dynamic Client Registration (RFC 7591) — no pre-registered app needed
-#   - PKCE (RFC 7636) — no client_secret required (public client)
+# Robinhood MCP uses OAuth 2.0 with:
+#   - Dynamic Client Registration (RFC 7591) — no pre-registered app
+#   - PKCE (RFC 7636) — no client_secret (public client)
 #   - Authorization: https://robinhood.com/oauth
 #   - Token exchange: https://api.robinhood.com/oauth2/token/
 #   - Registration: https://agent.robinhood.com/oauth/trading/register
@@ -565,10 +779,8 @@ _REGISTER_URL = "https://agent.robinhood.com/oauth/trading/register"
 _AUTHORIZE_URL = "https://robinhood.com/oauth"
 _TOKEN_URL = "https://api.robinhood.com/oauth2/token/"
 
-import time as _time
-
 # In-memory PKCE store: {state: {verifier, client_id, expires_at}}
-# Entries expire after 5 minutes; stale ones are purged on each new auth attempt.
+# Entries expire after 5 minutes.
 _pkce_pending: dict[str, dict] = {}
 _PKCE_TTL = 300  # seconds
 
@@ -581,14 +793,24 @@ def _purge_stale_pkce() -> None:
 
 
 def _pkce_pair() -> tuple[str, str]:
-    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+    verifier = (
+        base64.urlsafe_b64encode(secrets.token_bytes(32))
+        .rstrip(b"=")
+        .decode()
+    )
     digest = hashlib.sha256(verifier.encode()).digest()
-    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    challenge = (
+        base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    )
     return verifier, challenge
 
 
 def _get_or_register_client_id(db: Session) -> str:
-    row = db.query(ConfigKnob).filter(ConfigKnob.key == "robinhood_client_id").first()
+    row = (
+        db.query(ConfigKnob)
+        .filter(ConfigKnob.key == "robinhood_client_id")
+        .first()
+    )
     if row:
         return json.loads(row.value)
 
@@ -615,7 +837,8 @@ async def auth_robinhood(db: Session = Depends(get_db)):
         client_id = _get_or_register_client_id(db)
     except httpx.HTTPError as e:
         raise HTTPException(
-            status_code=502, detail=f"Client registration failed: {e}"
+            status_code=502,
+            detail=f"Client registration failed: {e}",
         ) from e
 
     _purge_stale_pkce()
@@ -640,11 +863,10 @@ async def auth_robinhood(db: Session = Depends(get_db)):
 
 
 @router.get("/auth/robinhood/callback")
-async def auth_robinhood_callback(code: str, state: str, db: Session = Depends(get_db)):
-    """
-    Receives the OAuth callback code, exchanges it for tokens using PKCE,
-    saves them encrypted, and redirects to the dashboard.
-    """
+async def auth_robinhood_callback(
+    code: str, state: str, db: Session = Depends(get_db)
+):
+    """Exchange OAuth code for tokens (PKCE), save encrypted, redirect."""
     pkce = _pkce_pending.pop(state, None)
     if not pkce or pkce["expires_at"] < _time.monotonic():
         raise HTTPException(
@@ -669,30 +891,47 @@ async def auth_robinhood_callback(code: str, state: str, db: Session = Depends(g
     except httpx.HTTPStatusError as e:
         raise HTTPException(
             status_code=502,
-            detail=f"Token exchange failed ({e.response.status_code}): {e.response.text}",
+            detail=(
+                f"Token exchange failed "
+                f"({e.response.status_code}): {e.response.text}"
+            ),
         ) from e
     except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"Token exchange error: {e}") from e
+        raise HTTPException(
+            status_code=502, detail=f"Token exchange error: {e}"
+        ) from e
 
-    expires_at = datetime.utcnow() + timedelta(seconds=int(data.get("expires_in", 86400)))
-    save_tokens(db, data["access_token"], data.get("refresh_token", ""), expires_at)
+    expires_at = datetime.utcnow() + timedelta(
+        seconds=int(data.get("expires_in", 86400))
+    )
+    save_tokens(
+        db,
+        data["access_token"],
+        data.get("refresh_token", ""),
+        expires_at,
+    )
     return RedirectResponse(url="/?connected=true")
 
 
 class ManualTokenInput(BaseModel):
     access_token: str
     refresh_token: str = ""
-    expires_at: Optional[str] = None  # ISO datetime; defaults to 24 h from now
+    expires_at: Optional[str] = None  # ISO datetime; default 24 h from now
 
 
 @router.post("/api/robinhood/token")
-async def set_manual_token(body: ManualTokenInput, db: Session = Depends(get_db)):
+async def set_manual_token(
+    body: ManualTokenInput, db: Session = Depends(get_db)
+):
     """Fallback: paste tokens obtained externally."""
     if body.expires_at:
         try:
             expires_at = datetime.fromisoformat(body.expires_at)
         except ValueError as e:
-            raise HTTPException(status_code=400, detail="expires_at must be ISO format") from e
+            raise HTTPException(
+                status_code=400,
+                detail="expires_at must be ISO format",
+            ) from e
     else:
         expires_at = datetime.utcnow() + timedelta(hours=24)
 
@@ -707,8 +946,9 @@ async def robinhood_status(db: Session = Depends(get_db)):
     if tokens is None:
         return {"connected": False, "expires_at": None, "account_id": None}
     acct = get_knob("robinhood_agentic_account")
+    exp = tokens["expires_at"]
     return {
         "connected": True,
-        "expires_at": tokens["expires_at"].isoformat() if tokens["expires_at"] else None,
+        "expires_at": exp.isoformat() if exp else None,
         "account_id": f"•••{str(acct)[-4:]}" if acct else None,
     }

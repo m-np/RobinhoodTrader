@@ -11,6 +11,7 @@ from agent.loop import run_agent_cycle
 from agent.mcp_client import RobinhoodMCPClient
 from alerts.market_waves import check_market_waves
 from config import settings
+from discover.engine import check_and_run_discovery
 from mirrors.capitol_trades import check_and_queue_mirror_trades
 from mirrors.sec_edgar import check_and_queue_institutional_mirrors
 from reports.generator import generate_report
@@ -246,6 +247,13 @@ def _run_weekly_report():
             logger.exception("Weekly report error: %s", e)
 
 
+def _run_discovery():
+    try:
+        check_and_run_discovery(_get_mcp())
+    except Exception as e:
+        logger.exception("Stock discovery error: %s", e)
+
+
 def start_scheduler() -> BackgroundScheduler:
     global _scheduler
     scheduler = BackgroundScheduler(timezone=ET)
@@ -325,15 +333,31 @@ def start_scheduler() -> BackgroundScheduler:
     }
     scheduler.add_job(
         _run_weekly_report,
-        trigger=CronTrigger(day_of_week=day_map.get(weekly_day, "fri"), hour=16, minute=5, timezone=ET),
+        trigger=CronTrigger(
+            day_of_week=day_map.get(weekly_day, "fri"),
+            hour=16, minute=5, timezone=ET,
+        ),
         id="weekly_report",
         name="Weekly report",
         replace_existing=True,
     )
 
+    scheduler.add_job(
+        _run_discovery,
+        trigger=CronTrigger(
+            day_of_week="mon-fri", hour=9, minute=35, timezone=ET,
+        ),
+        id="stock_discovery",
+        name="Stock discovery (Google + Robinhood trending)",
+        replace_existing=True,
+    )
+
     scheduler.start()
     _scheduler = scheduler
-    logger.info("Scheduler started: agent every %d min, waves+watchlist every 5 min", settings.AGENT_INTERVAL_MINUTES)
+    logger.info(
+        "Scheduler started: agent every %d min",
+        settings.AGENT_INTERVAL_MINUTES,
+    )
     return scheduler
 
 
