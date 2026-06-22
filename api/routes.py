@@ -14,7 +14,10 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from agent.guardrails import set_knob
+from agent.guardrails import (
+    ApprovalPending, GuardrailViolation, check_all, get_knob, set_knob,
+)
+from agent.loop import _enrich_today_pnl
 from agent.mcp_client import RobinhoodMCPClient
 from api.deps import get_db
 from config import settings
@@ -68,7 +71,7 @@ async def reports_page(request: Request):
 @router.get("/api/portfolio")
 async def api_portfolio(db: Session = Depends(get_db)):
     mcp = _get_mcp()
-    portfolio = mcp.get_portfolio()
+    portfolio = _enrich_today_pnl(mcp.get_portfolio())
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     trades_today = db.query(Trade).filter(
         Trade.created_at >= today_start, Trade.status == "executed"
@@ -145,7 +148,6 @@ class QuickTradeInput(BaseModel):
 @router.post("/api/trades/quick")
 async def quick_trade(body: QuickTradeInput, db: Session = Depends(get_db)):
     """Execute a quick buy/sell from a signal card."""
-    from agent.guardrails import GuardrailViolation, check_all
     from agent.mcp_client import McpConnectionError
     mcp = _get_mcp()
     ticker = body.ticker.upper()
@@ -184,6 +186,14 @@ async def quick_trade(body: QuickTradeInput, db: Session = Depends(get_db)):
             trade_id=trade.id,
             notifier=None,
         )
+    except ApprovalPending:
+        db.refresh(trade)
+        return {
+            "status": "pending_approval",
+            "trade_id": trade.id,
+            "qty": qty,
+            "price": price,
+        }
     except GuardrailViolation as e:
         trade.status = "rejected"
         db.commit()
@@ -194,7 +204,12 @@ async def quick_trade(body: QuickTradeInput, db: Session = Depends(get_db)):
         trade.status = "executed"
         trade.executed_at = datetime.utcnow()
         db.commit()
-        return {"status": "executed", "trade_id": trade.id, "qty": qty, "price": price}
+        return {
+            "status": "executed",
+            "trade_id": trade.id,
+            "qty": qty,
+            "price": price,
+        }
     except McpConnectionError as e:
         trade.status = "rejected"
         db.commit()
@@ -230,9 +245,10 @@ async def approve_trade(trade_id: str, db: Session = Depends(get_db)):
     trade = db.query(Trade).filter(Trade.id == trade_id).first()
     if not trade:
         raise HTTPException(status_code=404, detail="Trade not found")
-    trade.status = "executed"
-    trade.executed_at = datetime.utcnow()
-    db.query(Alert).filter(Alert.trade_id == trade_id).update({"acknowledged": True})
+    trade.status = "approved"
+    db.query(Alert).filter(Alert.trade_id == trade_id).update(
+        {"acknowledged": True}
+    )
     db.commit()
     return {"status": "approved"}
 
@@ -252,7 +268,12 @@ async def reject_trade(trade_id: str, db: Session = Depends(get_db)):
 
 @router.get("/api/alerts")
 async def api_alerts(db: Session = Depends(get_db)):
-    rows = db.query(Alert).filter(Alert.acknowledged == False).order_by(Alert.created_at.desc()).all()
+    rows = (
+        db.query(Alert)
+        .filter(Alert.acknowledged.is_(False))
+        .order_by(Alert.created_at.desc())
+        .all()
+    )
     return [
         {
             "id": a.id,
@@ -286,19 +307,21 @@ class WatchlistAdd(BaseModel):
 
 @router.get("/api/watchlist")
 async def api_watchlist(db: Session = Depends(get_db)):
+    from agent.price_cache import get as cache_get, is_empty as cache_empty, update as cache_update
     rows = db.query(Watchlist).order_by(Watchlist.added_at.desc()).all()
     if not rows:
         return []
-    mcp = _get_mcp()
-    quotes = mcp.get_quotes_batch([r.ticker for r in rows])
+    # Cold-start fallback: populate cache on first request if scheduler hasn't run yet
+    if cache_empty():
+        quotes = _get_mcp().get_quotes_batch([r.ticker for r in rows])
+        cache_update(quotes)
     return [
         {
             "id": r.id,
             "ticker": r.ticker,
             "notes": r.notes,
             "added_at": r.added_at.isoformat() if r.added_at else None,
-            "price": quotes.get(r.ticker, {}).get("price"),
-            "change_pct": quotes.get(r.ticker, {}).get("change_pct"),
+            **cache_get(r.ticker),
         }
         for r in rows
     ]
@@ -314,6 +337,27 @@ async def add_watchlist(body: WatchlistAdd, db: Session = Depends(get_db)):
     db.add(row)
     db.commit()
     return {"status": "added", "ticker": ticker}
+
+
+@router.get("/api/watchlist/prices/history")
+async def api_watchlist_price_history(period: str = "1d", db: Session = Depends(get_db)):
+    """Price history for all watchlist tickers — used for sparklines. period: 1d | 7d | 30d"""
+    from db.models import WatchlistPriceSnapshot
+    days = {"1d": 1, "7d": 7, "30d": 30}.get(period, 1)
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    rows = (
+        db.query(WatchlistPriceSnapshot)
+        .filter(WatchlistPriceSnapshot.recorded_at >= cutoff)
+        .order_by(WatchlistPriceSnapshot.ticker, WatchlistPriceSnapshot.recorded_at)
+        .all()
+    )
+    result: dict = {}
+    for r in rows:
+        result.setdefault(r.ticker, []).append({
+            "ts": r.recorded_at.isoformat() + "Z",
+            "price": r.price,
+        })
+    return result
 
 
 @router.delete("/api/watchlist/{ticker}")
@@ -452,6 +496,62 @@ async def api_last_report(db: Session = Depends(get_db)):
     }
 
 
+# ── Notifications ─────────────────────────────────────────────────────────────
+
+class NotifyConfigInput(BaseModel):
+    notify_email: Optional[str] = None
+    notify_phone: Optional[str] = None
+
+
+class NotifyTestInput(BaseModel):
+    type: str = "email"  # "email" | "sms" | "both"
+
+
+@router.get("/api/notify/status")
+async def notify_status():
+    """Return whether SMTP/Twilio are configured and current recipient addresses."""
+    from notifications.notifier import _get_notify_email, _get_notify_phone
+    return {
+        "smtp_configured": bool(settings.SMTP_USER and settings.SMTP_PASSWORD),
+        "twilio_configured": bool(settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN),
+        "notify_email": _get_notify_email(),
+        "notify_phone": _get_notify_phone(),
+    }
+
+
+@router.post("/api/notify/config")
+async def save_notify_config(body: NotifyConfigInput):
+    """Save recipient email/phone to DB (overrides .env values)."""
+    if body.notify_email is not None:
+        set_knob("notify_email", body.notify_email)
+    if body.notify_phone is not None:
+        set_knob("notify_phone", body.notify_phone)
+    return {"status": "saved"}
+
+
+@router.post("/api/notify/test")
+async def notify_test(body: NotifyTestInput):
+    """Send a test notification to verify credentials and recipient."""
+    from notifications.notifier import get_notifier
+    notifier = get_notifier()
+    results: dict[str, bool | None] = {"email": None, "sms": None}
+    errors: list[str] = []
+
+    if body.type in ("email", "both"):
+        ok = notifier.send_test_email()
+        results["email"] = ok
+        if not ok:
+            errors.append("Email failed — check SMTP credentials and recipient address")
+
+    if body.type in ("sms", "both"):
+        ok = notifier.send_test_sms()
+        results["sms"] = ok
+        if not ok:
+            errors.append("SMS failed — check Twilio credentials and phone number")
+
+    return {"results": results, "errors": errors}
+
+
 # ── Robinhood OAuth — PKCE + Dynamic Client Registration ─────────────────────
 #
 # Robinhood's MCP uses standard OAuth 2.0 with:
@@ -465,12 +565,22 @@ _REGISTER_URL = "https://agent.robinhood.com/oauth/trading/register"
 _AUTHORIZE_URL = "https://robinhood.com/oauth"
 _TOKEN_URL = "https://api.robinhood.com/oauth2/token/"
 
-# In-memory store for PKCE state — keyed by `state` param, short-lived
+import time as _time
+
+# In-memory PKCE store: {state: {verifier, client_id, expires_at}}
+# Entries expire after 5 minutes; stale ones are purged on each new auth attempt.
 _pkce_pending: dict[str, dict] = {}
+_PKCE_TTL = 300  # seconds
+
+
+def _purge_stale_pkce() -> None:
+    now = _time.monotonic()
+    stale = [k for k, v in _pkce_pending.items() if v["expires_at"] < now]
+    for k in stale:
+        _pkce_pending.pop(k, None)
 
 
 def _pkce_pair() -> tuple[str, str]:
-    """Generate PKCE code_verifier and code_challenge (S256)."""
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
     digest = hashlib.sha256(verifier.encode()).digest()
     challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
@@ -478,10 +588,6 @@ def _pkce_pair() -> tuple[str, str]:
 
 
 def _get_or_register_client_id(db: Session) -> str:
-    """
-    Returns the client_id registered with Robinhood.
-    Registers dynamically on first call and caches the result in config_knobs.
-    """
     row = db.query(ConfigKnob).filter(ConfigKnob.key == "robinhood_client_id").first()
     if row:
         return json.loads(row.value)
@@ -495,7 +601,7 @@ def _get_or_register_client_id(db: Session) -> str:
             "response_types": ["code"],
             "token_endpoint_auth_method": "none",
         },
-        timeout=15,
+        timeout=settings.OAUTH_TIMEOUT,
     )
     resp.raise_for_status()
     client_id = resp.json()["client_id"]
@@ -505,19 +611,21 @@ def _get_or_register_client_id(db: Session) -> str:
 
 @router.get("/auth/robinhood")
 async def auth_robinhood(db: Session = Depends(get_db)):
-    """
-    Starts the Robinhood OAuth flow.
-    Dynamically registers this app if not already registered,
-    then redirects to Robinhood's consent page with PKCE.
-    """
     try:
         client_id = _get_or_register_client_id(db)
     except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Client registration failed: {e}") from e
+        raise HTTPException(
+            status_code=502, detail=f"Client registration failed: {e}"
+        ) from e
 
+    _purge_stale_pkce()
     verifier, challenge = _pkce_pair()
     state = secrets.token_urlsafe(16)
-    _pkce_pending[state] = {"verifier": verifier, "client_id": client_id}
+    _pkce_pending[state] = {
+        "verifier": verifier,
+        "client_id": client_id,
+        "expires_at": _time.monotonic() + _PKCE_TTL,
+    }
 
     params = {
         "response_type": "code",
@@ -538,8 +646,11 @@ async def auth_robinhood_callback(code: str, state: str, db: Session = Depends(g
     saves them encrypted, and redirects to the dashboard.
     """
     pkce = _pkce_pending.pop(state, None)
-    if not pkce:
-        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state. Try connecting again.")
+    if not pkce or pkce["expires_at"] < _time.monotonic():
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired OAuth state. Try connecting again.",
+        )
 
     try:
         resp = httpx.post(
@@ -551,7 +662,7 @@ async def auth_robinhood_callback(code: str, state: str, db: Session = Depends(g
                 "redirect_uri": settings.ROBINHOOD_REDIRECT_URI,
                 "code_verifier": pkce["verifier"],
             },
-            timeout=15,
+            timeout=settings.OAUTH_TIMEOUT,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -592,7 +703,6 @@ async def set_manual_token(body: ManualTokenInput, db: Session = Depends(get_db)
 @router.get("/api/robinhood/status")
 async def robinhood_status(db: Session = Depends(get_db)):
     """Connection status for the dashboard banner."""
-    from agent.guardrails import get_knob
     tokens = get_tokens(db)
     if tokens is None:
         return {"connected": False, "expires_at": None, "account_id": None}

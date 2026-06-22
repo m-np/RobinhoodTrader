@@ -1,6 +1,7 @@
+import base64
 import json
 import logging
-import os
+import secrets
 import subprocess
 import sys
 import uuid
@@ -8,7 +9,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
@@ -37,6 +39,11 @@ DEFAULT_KNOBS = {
     "report_depth": "brief",
     "report_include_rationale": True,
     "report_include_pnl": True,
+    "wave_threshold_pct": 3.0,
+    "wave_critical_pct": 7.0,
+    "mirror_auto_execute": False,
+    "notify_email": "",
+    "notify_phone": "",
 }
 
 MIRROR_SEEDS = [
@@ -123,7 +130,7 @@ async def lifespan(app: FastAPI):
     seed_defaults()
 
     from agent.scheduler import start_scheduler, stop_scheduler
-    scheduler = start_scheduler()
+    start_scheduler()
 
     yield
 
@@ -131,6 +138,30 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Agentic Trader", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def basic_auth_middleware(request: Request, call_next):
+    if not settings.DASHBOARD_SECRET:
+        return await call_next(request)
+    if request.url.path.startswith("/static"):
+        return await call_next(request)
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Basic "):
+        try:
+            _, password = (
+                base64.b64decode(auth[6:]).decode().split(":", 1)
+            )
+            if secrets.compare_digest(password, settings.DASHBOARD_SECRET):
+                return await call_next(request)
+        except Exception:
+            pass
+    return Response(
+        content="Unauthorized",
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="Agentic Trader"'},
+    )
+
 
 app.mount("/static", StaticFiles(directory="ui/static"), name="static")
 

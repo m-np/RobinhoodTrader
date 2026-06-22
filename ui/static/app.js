@@ -22,7 +22,6 @@ async function loadAll() {
 async function loadRobinhoodStatus() {
   const connectBanner = document.getElementById('connect-banner');
   const connectedBanner = document.getElementById('connected-banner');
-  if (!connectBanner && !connectedBanner) return;
   try {
     const res = await fetch('/api/robinhood/status');
     const data = await res.json();
@@ -45,6 +44,21 @@ async function loadRobinhoodStatus() {
       if (connectedBanner) connectedBanner.style.display = 'none';
       if (dot) dot.style.background = '#854f0b';
       if (txt) txt.textContent = 'Not connected to Robinhood';
+    }
+    // Update settings page connection card
+    const desc = document.getElementById('rh-status-desc');
+    const btn = document.getElementById('rh-connect-btn');
+    if (desc && btn) {
+      if (data.connected) {
+        const expiry = data.expires_at ? ' · expires ' + new Date(data.expires_at).toLocaleDateString() : '';
+        desc.textContent = 'Connected' + (data.account_id ? ' · account ' + data.account_id : '') + expiry;
+        desc.style.color = 'var(--green, #2d7a4f)';
+        btn.textContent = 'Reconnect Robinhood';
+      } else {
+        desc.textContent = 'Not connected — agent cannot place trades.';
+        desc.style.color = 'var(--amber, #854f0b)';
+        btn.textContent = 'Connect Robinhood';
+      }
     }
   } catch (e) {
     console.error('loadRobinhoodStatus:', e);
@@ -81,11 +95,15 @@ async function loadWallet() {
   }
 }
 
+// Cached live portfolio value — used by the chart to pin the current point
+let _livePortfolio = null;
+
 // Portfolio
 async function loadPortfolio() {
   try {
     const res = await fetch('/api/portfolio');
     const data = await res.json();
+    _livePortfolio = data;
     const total = document.getElementById('m-total');
     const equity = document.getElementById('m-equity');
     const pnl = document.getElementById('m-pnl');
@@ -128,97 +146,252 @@ async function loadPortfolio() {
   } catch (e) { console.error('loadPortfolio:', e); }
 }
 
-// Alerts — full action buttons for all signal types
+// ── Signal auto-fade state ─────────────────────────────────────────────────
+// _fadingAlerts: IDs currently mid-animation (excluded from re-renders)
+// _scheduledFades: {id: timeoutId} — prevent duplicate timers across polls
+const _fadingAlerts = new Set();
+const _scheduledFades = {};
+
+// Returns ms until auto-fade, or null if the signal must never auto-dismiss.
+// Delay is based on alert age so re-renders don't reset the clock.
+function getAutoFadeDelay(a) {
+  if (a.alert_type === 'approval_request') return null;
+  if (a.severity === 'critical') return null;
+  const ageSec = (Date.now() - new Date(a.created_at)) / 1000;
+  const totalSec = a.severity === 'warning' ? 45 : 20;
+  return Math.max(0, (totalSec - ageSec) * 1000);
+}
+
+function scheduleAutoFades(alerts) {
+  alerts.forEach(a => {
+    if (_fadingAlerts.has(a.id) || _scheduledFades[a.id]) return;
+    const delay = getAutoFadeDelay(a);
+    if (delay === null) return;
+    _scheduledFades[a.id] = setTimeout(() => {
+      delete _scheduledFades[a.id];
+      const card = document.querySelector(`.signal-card[data-id="${a.id}"]`);
+      if (!card) return;
+      _fadingAlerts.add(a.id);
+      card.classList.add('fading-out');
+      setTimeout(async () => {
+        await fetch(`/api/alerts/${a.id}/ack`, { method: 'POST' });
+        _fadingAlerts.delete(a.id);
+      }, 550);
+    }, delay);
+  });
+}
+
+// ── Alerts — only decision signals (buy/sell) are shown ───────────────────
 async function loadAlerts() {
   try {
     const res = await fetch('/api/alerts');
     const alerts = await res.json();
     const feed = document.getElementById('signals-feed');
     if (!feed) return;
-    if (!alerts.length) {
-      feed.innerHTML = '<p style="color:var(--text-3);font-size:13px;padding:12px 0">No active signals.</p>';
+
+    // Only show signals that require a buy or sell decision
+    const decisions = alerts.filter(a =>
+      !_fadingAlerts.has(a.id) &&
+      (a.alert_type === 'approval_request' || (a.alert_type === 'mirror_trade' && a.ticker))
+    );
+
+    if (!decisions.length) {
+      feed.innerHTML = '<p style="color:var(--text-3);font-size:13px;padding:12px 0">No pending decisions.</p>';
       return;
     }
+
     const canTrade = typeof openQuickTrade === 'function';
-    feed.innerHTML = alerts.map(a => {
-      let actions = '';
-      if (a.alert_type === 'approval_request' && a.trade_id) {
-        actions = `<button class="btn-primary btn-sm" onclick="approveTrade('${a.trade_id}')">Approve</button>
-                   <button class="btn-danger btn-sm" onclick="rejectTrade('${a.trade_id}')">Reject</button>`;
-      } else if (a.alert_type === 'market_wave' && a.ticker) {
-        actions = canTrade
-          ? `<button class="btn-primary btn-sm" onclick="openQuickTrade('${a.ticker}','buy',null)">Buy</button>
-             <button class="btn-danger btn-sm" onclick="openQuickTrade('${a.ticker}','sell',null)">Sell</button>
-             <button class="btn-sm" onclick="ackAlert('${a.id}')">Dismiss</button>`
-          : `<button class="btn-sm" onclick="ackAlert('${a.id}')">Dismiss</button>`;
-      } else if (a.alert_type === 'mirror_trade' && a.ticker) {
-        actions = canTrade
-          ? `<button class="btn-primary btn-sm" onclick="openQuickTrade('${a.ticker}','buy',null)">Mirror buy</button>
-             <button class="btn-sm" onclick="ackAlert('${a.id}')">Skip</button>`
-          : `<button class="btn-sm" onclick="ackAlert('${a.id}')">Dismiss</button>`;
+    feed.innerHTML = decisions.map(a => {
+      let action, amount, context, primaryBtn, secondaryBtn;
+
+      if (a.alert_type === 'approval_request') {
+        // Message format: "Trade requires your approval (reason): BUY AAPL · 3.5 shares @ $143.25 (~$500.38)"
+        const dirMatch = a.message.match(/:\s*(BUY|SELL)/i);
+        action = dirMatch ? dirMatch[1].toLowerCase() : 'buy';
+
+        // Quantity + price per share
+        const qtyMatch = a.message.match(/·\s*([\d.]+)\s*shares?\s*@\s*(\$[\d,.]+)/i);
+        // Fallback: just the total
+        const totalMatch = a.message.match(/\(~?(\$[\d,.]+)\)/);
+        if (qtyMatch) {
+          amount = `${qtyMatch[1]} shares @ ${qtyMatch[2]}`;
+          if (totalMatch) amount += ` · ${totalMatch[1]} total`;
+        } else if (totalMatch) {
+          amount = totalMatch[1];
+        } else {
+          amount = '';
+        }
+
+        // Reason from first parenthetical
+        context = (a.message.match(/\(([^)]+)\)/) || [])[1] || 'agent recommendation';
+
+        primaryBtn = `<button class="decision-btn decision-btn-${action}" onclick="approveTrade('${a.trade_id}','${a.id}')">
+                        ${action === 'sell' ? 'Approve sell' : 'Approve buy'}
+                      </button>`;
+        secondaryBtn = `<button class="btn-sm" onclick="rejectTrade('${a.trade_id}','${a.id}')">Reject</button>`;
+
       } else {
-        actions = `<button class="btn-sm" onclick="ackAlert('${a.id}')">Dismiss</button>`;
+        // mirror_trade
+        action = /\b(sell|sold)\b/i.test(a.message) ? 'sell' : 'buy';
+
+        // Disclosed dollar amount: "amount: $1K–$15K"
+        const amtMatch = a.message.match(/amount:\s*([^)]+)\)/i);
+        amount = amtMatch ? amtMatch[1].trim() + ' disclosed' : '';
+
+        // Source name before " disclosed"
+        const src = (a.message.match(/^(.+?)\s+disclosed/i) || [])[1] || 'Mirror';
+        context = 'Via ' + src;
+
+        primaryBtn = canTrade
+          ? `<button class="decision-btn decision-btn-${action}" onclick="openQuickTrade('${a.ticker}','${action}',null)">
+               ${action === 'sell' ? 'Sell' : 'Buy'} ${a.ticker}
+             </button>`
+          : '';
+        secondaryBtn = `<button class="btn-sm" onclick="ackAlert('${a.id}')">Skip</button>`;
       }
+
       return `
-        <div class="signal-card" data-severity="${a.severity}">
-          <div class="signal-top">
-            <div>
-              ${a.ticker ? `<span class="signal-ticker">${a.ticker}</span>` : ''}
-              <span class="badge ${badgeClass(a.alert_type)}">${alertLabel(a.alert_type)}</span>
-            </div>
-            <span class="signal-time">${timeAgo(a.created_at)}</span>
+        <div class="signal-card decision-card" data-id="${a.id}">
+          <div class="decision-header">
+            <span class="decision-action action-${action}">${action.toUpperCase()}</span>
+            <span class="decision-ticker">${a.ticker || ''}</span>
+            <span class="signal-time" style="margin-left:auto">${timeAgo(a.created_at)}</span>
           </div>
-          <p class="signal-body">${a.message}</p>
-          <div class="signal-actions">${actions}</div>
+          ${amount ? `<p class="decision-amount">${amount}</p>` : ''}
+          <p class="decision-context">${context}</p>
+          <div class="signal-actions">
+            ${primaryBtn}
+            ${secondaryBtn}
+          </div>
         </div>`;
     }).join('');
+
+    scheduleAutoFades(decisions);
   } catch (e) { console.error('loadAlerts:', e); }
 }
 
 async function pollAlerts() { await loadAlerts(); }
 
 async function ackAlert(id) {
-  await fetch(`/api/alerts/${id}/ack`, { method: 'POST' });
-  await loadAlerts();
+  // Cancel any pending auto-fade timer
+  if (_scheduledFades[id]) { clearTimeout(_scheduledFades[id]); delete _scheduledFades[id]; }
+  const card = document.querySelector(`.signal-card[data-id="${id}"]`);
+  if (card) {
+    _fadingAlerts.add(id);
+    card.classList.add('fading-out');
+    setTimeout(async () => {
+      await fetch(`/api/alerts/${id}/ack`, { method: 'POST' });
+      _fadingAlerts.delete(id);
+      const feed = document.getElementById('signals-feed');
+      if (feed && !feed.querySelector('.signal-card')) {
+        feed.innerHTML = '<p style="color:var(--text-3);font-size:13px;padding:12px 0">No active signals.</p>';
+      }
+    }, 550);
+  } else {
+    await fetch(`/api/alerts/${id}/ack`, { method: 'POST' });
+    await loadAlerts();
+  }
 }
 
-async function approveTrade(id) {
-  await fetch(`/api/trades/${id}/approve`, { method: 'POST' });
-  await loadAlerts();
-  await loadPortfolio();
+// Add a ticker to the watchlist directly from a signal card button
+async function quickWatch(ticker, btnEl) {
+  const orig = btnEl.textContent;
+  btnEl.disabled = true;
+  btnEl.textContent = '…';
+  try {
+    const res = await fetch('/api/watchlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker }),
+    });
+    btnEl.textContent = res.status === 409 ? 'Watching' : '✓ Watching';
+    btnEl.style.color = 'var(--green)';
+    loadWatchlist();
+  } catch (e) {
+    btnEl.textContent = orig;
+    btnEl.disabled = false;
+  }
 }
 
-async function rejectTrade(id) {
-  await fetch(`/api/trades/${id}/reject`, { method: 'POST' });
-  await loadAlerts();
+async function approveTrade(tradeId, alertId) {
+  await fetch(`/api/trades/${tradeId}/approve`, { method: 'POST' });
+  if (alertId) await ackAlert(alertId);
+  else await loadAlerts();
+  loadPortfolio();
+}
+
+async function rejectTrade(tradeId, alertId) {
+  await fetch(`/api/trades/${tradeId}/reject`, { method: 'POST' });
+  if (alertId) await ackAlert(alertId);
+  else await loadAlerts();
+}
+
+// Previous prices — used to detect changes and trigger flash
+const _prevPrices = {};
+
+// Returns true if US equities market is currently open (Mon–Fri 9:30–16:00 ET)
+function isMarketOpen() {
+  const et = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const day = et.getDay();          // 0 Sun … 6 Sat
+  const mins = et.getHours() * 60 + et.getMinutes();
+  return day >= 1 && day <= 5 && mins >= 9 * 60 + 30 && mins < 16 * 60;
+}
+
+// Render a tiny SVG sparkline from an array of {price} points
+function _makeSpark(points, width, height) {
+  if (!points || points.length < 2) return '<span style="color:var(--text-3);font-size:11px">—</span>';
+  const vals = points.map(p => p.price).filter(v => v != null);
+  if (vals.length < 2) return '<span style="color:var(--text-3);font-size:11px">—</span>';
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const range = max - min || 1;
+  const xStep = width / (vals.length - 1);
+  const pts = vals.map((v, i) =>
+    `${(i * xStep).toFixed(1)},${(height - ((v - min) / range) * height).toFixed(1)}`
+  ).join(' ');
+  const up = vals[vals.length - 1] >= vals[0];
+  const color = up ? 'var(--green, #2d7a4f)' : 'var(--red, #a32d2d)';
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="display:block">` +
+    `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
 
 // Watchlist — updates both sidebar widget (#watchlist-widget) and full table (#watchlist-tbody)
 async function loadWatchlist() {
   try {
-    const res = await fetch('/api/watchlist');
-    if (!res.ok) { console.error('loadWatchlist HTTP', res.status); return; }
-    const rows = await res.json();
+    const [wRes, hRes] = await Promise.all([
+      fetch('/api/watchlist'),
+      fetch('/api/watchlist/prices/history?period=1d'),
+    ]);
+    if (!wRes.ok) { console.error('loadWatchlist HTTP', wRes.status); return; }
+    const rows = await wRes.json();
+    const history = hRes.ok ? await hRes.json() : {};
 
-    // Detect whether live prices came back
+    // Detect whether live prices came back and whether market is open
     const hasLivePrices = rows.some(r => r.price != null);
-    const statusEl = document.getElementById('watchlist-status');
-    if (statusEl) {
-      if (!hasLivePrices && rows.length > 0) {
-        statusEl.textContent = 'Connect Robinhood to see live prices.';
-        statusEl.style.color = 'var(--amber)';
-      } else if (hasLivePrices) {
-        const t = new Date().toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
-        statusEl.textContent = 'Live · updated ' + t;
-        statusEl.style.color = 'var(--text-3)';
-      }
+    const open = isMarketOpen();
+    const updatedAt = new Date().toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+
+    let statusText, statusColor;
+    if (!hasLivePrices && rows.length > 0) {
+      statusText = 'Connect Robinhood to see prices';
+      statusColor = 'var(--amber)';
+    } else if (!open) {
+      statusText = 'Market closed · last close ' + updatedAt;
+      statusColor = 'var(--text-3)';
+    } else {
+      statusText = 'Live · updated ' + updatedAt;
+      statusColor = 'var(--text-3)';
     }
+
+    // Full watchlist page status label
+    const statusEl = document.getElementById('watchlist-status');
+    if (statusEl) { statusEl.textContent = statusText; statusEl.style.color = statusColor; }
 
     const widget = document.getElementById('watchlist-widget');
     if (widget) {
-      widget.innerHTML = rows.length === 0
-        ? '<p style="color:var(--text-3);font-size:12px;padding:6px 0">Empty watchlist.</p>'
-        : rows.map(r => `
+      if (rows.length === 0) {
+        widget.innerHTML = '<p style="color:var(--text-3);font-size:12px;padding:6px 0">Empty watchlist.</p>';
+      } else {
+        widget.innerHTML = rows.map(r => `
           <div class="watch-row">
             <span class="watch-ticker">${r.ticker}</span>
             <div class="watch-right">
@@ -226,22 +399,32 @@ async function loadWatchlist() {
               <span class="watch-chg ${(r.change_pct || 0) >= 0 ? 'positive' : 'negative'}">${r.change_pct != null ? (r.change_pct >= 0 ? '+' : '')+r.change_pct.toFixed(1)+'%' : ''}</span>
             </div>
           </div>
-        `).join('');
+        `).join('') +
+        `<div style="font-size:11px;color:${statusColor};padding:7px 0 2px;border-top:0.5px solid var(--border);margin-top:4px">${statusText}</div>`;
+      }
     }
     const tbody = document.getElementById('watchlist-tbody');
     if (tbody) {
-      tbody.innerHTML = rows.length === 0
-        ? '<tr><td colspan="6" style="color:var(--text-3);text-align:center;padding:20px">No tickers yet. Add one above.</td></tr>'
-        : rows.map(r => `
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-3);text-align:center;padding:20px">No tickers yet. Add one above.</td></tr>';
+      } else {
+        tbody.innerHTML = rows.map(r => {
+          const prev = _prevPrices[r.ticker];
+          const priceChanged = r.price != null && prev != null && r.price !== prev;
+          const flashClass = priceChanged ? (r.price > prev ? 'flash-up' : 'flash-down') : '';
+          return `
           <tr>
             <td><strong>${r.ticker}</strong></td>
             <td style="color:var(--text-2)">${r.notes || '—'}</td>
             <td style="color:var(--text-3)">${formatDate(r.added_at)}</td>
-            <td>${r.price != null ? '$'+r.price.toFixed(2) : '—'}</td>
+            <td class="${flashClass}">${r.price != null ? '$'+r.price.toFixed(2) : '—'}</td>
             <td class="${(r.change_pct || 0) >= 0 ? 'positive' : 'negative'}">${r.change_pct != null ? (r.change_pct >= 0 ? '+' : '')+r.change_pct.toFixed(1)+'%' : '—'}</td>
+            <td>${_makeSpark(history[r.ticker], 80, 28)}</td>
             <td><button class="btn-remove" onclick="removeFromWatchlist('${r.ticker}')">Remove</button></td>
-          </tr>
-        `).join('');
+          </tr>`;
+        }).join('');
+        rows.forEach(r => { if (r.price != null) _prevPrices[r.ticker] = r.price; });
+      }
     }
   } catch (e) { console.error('loadWatchlist:', e); }
 }

@@ -2,15 +2,17 @@ import logging
 import uuid
 from datetime import datetime
 
+from agent.guardrails import get_knob
 from db.models import Alert, Watchlist
 from db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
-WAVE_THRESHOLD_PCT = 3.0
-
 
 def check_market_waves(mcp_client) -> None:
+    wave_threshold = get_knob("wave_threshold_pct", 3.0)
+    critical_threshold = get_knob("wave_critical_pct", 7.0)
+
     db = SessionLocal()
     try:
         tickers = [r.ticker for r in db.query(Watchlist).all()]
@@ -23,19 +25,19 @@ def check_market_waves(mcp_client) -> None:
             change_pct = quote.get("change_pct")
             if change_pct is None:
                 continue
-            if abs(change_pct) < WAVE_THRESHOLD_PCT:
+            if abs(change_pct) < wave_threshold:
                 continue
 
             existing = db.query(Alert).filter(
                 Alert.ticker == ticker,
                 Alert.alert_type == "market_wave",
-                Alert.acknowledged == False,
+                Alert.acknowledged.is_(False),
             ).first()
             if existing:
                 continue
 
             direction = "up" if change_pct > 0 else "down"
-            severity = "critical" if abs(change_pct) >= 7 else "warning"
+            severity = "critical" if abs(change_pct) >= critical_threshold else "warning"
             holding_note = ""
             if ticker in held:
                 h = held[ticker]

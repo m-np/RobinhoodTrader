@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 import httpx
 
+from config import settings
 from db.models import get_tokens, save_tokens
 from db.session import SessionLocal
 
@@ -82,7 +83,7 @@ class TokenManager:
                     "refresh_token": refresh_token,
                     "client_id": client_id,
                 },
-                timeout=15,
+                timeout=settings.OAUTH_TIMEOUT,
             )
             resp.raise_for_status()
             data = resp.json()

@@ -1,10 +1,8 @@
 import json
 import logging
-import threading
 import uuid
 from datetime import datetime, date
 
-from config import settings
 from db.session import SessionLocal
 from db.models import Alert, Blocklist, ConfigKnob, Trade
 
@@ -23,14 +21,18 @@ class GuardrailViolation(Exception):
     pass
 
 
+class ApprovalPending(Exception):
+    """Raised when a trade is queued for human approval (non-blocking)."""
+    pass
+
+
 def get_knob(key: str, default=None):
     db = SessionLocal()
     try:
         row = db.query(ConfigKnob).filter(ConfigKnob.key == key).first()
         if row is None:
             return default
-        val = json.loads(row.value)
-        return val
+        return json.loads(row.value)
     finally:
         db.close()
 
@@ -64,11 +66,8 @@ def check_all(
     trade_id: str,
     notifier=None,
 ) -> None:
-    """
-    Runs all guardrail checks. Raises GuardrailViolation on any breach.
-    For approval-gated trades, sets status=pending_approval and blocks until
-    approved/rejected or the timeout expires.
-    """
+    """Run all guardrail checks. Raises GuardrailViolation on breach or
+    ApprovalPending when the trade needs human sign-off before execution."""
     db = SessionLocal()
     try:
         _check_asset_class(asset_class)
@@ -76,7 +75,9 @@ def check_all(
         _check_daily_trade_limit(db)
         _check_daily_loss_halt(portfolio)
         _check_position_size(ticker, total_usd, portfolio)
-        _check_approval_gate(db, ticker, action, total_usd, trade_id, portfolio, notifier)
+        _check_approval_gate(
+            db, ticker, action, total_usd, trade_id, portfolio, notifier
+        )
     finally:
         db.close()
 
@@ -90,7 +91,11 @@ def _check_asset_class(asset_class: str) -> None:
 
 
 def _check_blocklist(db, ticker: str) -> None:
-    entry = db.query(Blocklist).filter(Blocklist.ticker == ticker.upper()).first()
+    entry = (
+        db.query(Blocklist)
+        .filter(Blocklist.ticker == ticker.upper())
+        .first()
+    )
     if entry:
         reason = entry.reason or "on blocklist"
         raise GuardrailViolation(f"{ticker} is blocked: {reason}")
@@ -101,11 +106,16 @@ def _check_daily_trade_limit(db) -> None:
     today_start = datetime.combine(date.today(), datetime.min.time())
     count = (
         db.query(Trade)
-        .filter(Trade.created_at >= today_start, Trade.status == "executed")
+        .filter(
+            Trade.created_at >= today_start,
+            Trade.status == "executed",
+        )
         .count()
     )
     if count >= max_trades:
-        raise GuardrailViolation(f"Daily trade limit of {max_trades} already reached")
+        raise GuardrailViolation(
+            f"Daily trade limit of {max_trades} already reached"
+        )
 
 
 def _check_daily_loss_halt(portfolio: dict) -> None:
@@ -113,40 +123,53 @@ def _check_daily_loss_halt(portfolio: dict) -> None:
     today_pnl_pct = portfolio.get("today_pnl_pct", 0.0)
     if today_pnl_pct <= -abs(halt_pct):
         raise GuardrailViolation(
-            f"Portfolio is down {abs(today_pnl_pct):.1f}% today — trading halted (limit: {halt_pct}%)"
+            f"Portfolio is down {abs(today_pnl_pct):.1f}% today — "
+            f"trading halted (limit: {halt_pct}%)"
         )
 
 
-def _check_position_size(ticker: str, total_usd: float, portfolio: dict) -> None:
+def _check_position_size(
+    ticker: str, total_usd: float, portfolio: dict
+) -> None:
     max_pct = get_knob("max_position_pct", 20)
     total_value = portfolio.get("total_value", 0.0)
     if total_value <= 0:
         return
     existing = next(
-        (h for h in portfolio.get("holdings", []) if h.get("ticker") == ticker),
+        (
+            h for h in portfolio.get("holdings", [])
+            if h.get("ticker") == ticker
+        ),
         None,
     )
     existing_value = existing.get("market_value", 0.0) if existing else 0.0
-    new_total = existing_value + total_usd
-    new_pct = (new_total / total_value) * 100
+    new_pct = ((existing_value + total_usd) / total_value) * 100
     if new_pct > max_pct:
         raise GuardrailViolation(
-            f"Order would put {ticker} at {new_pct:.1f}% of portfolio (max: {max_pct}%)"
+            f"Order would put {ticker} at {new_pct:.1f}% of portfolio "
+            f"(max: {max_pct}%)"
         )
 
 
-def _check_approval_gate(db, ticker, action, total_usd, trade_id, portfolio, notifier) -> None:
+def _check_approval_gate(
+    db, ticker, action, total_usd, trade_id, portfolio, notifier
+) -> None:
     needs_approval = False
     reasons = []
 
     threshold = get_knob("approval_threshold_usd", 500)
     if total_usd > threshold:
         needs_approval = True
-        reasons.append(f"trade value ${total_usd:.2f} exceeds threshold ${threshold}")
+        reasons.append(
+            f"trade value ${total_usd:.2f} exceeds threshold ${threshold}"
+        )
 
     if action == "buy" and get_knob("gate_new_positions", True):
         existing = next(
-            (h for h in portfolio.get("holdings", []) if h.get("ticker") == ticker),
+            (
+                h for h in portfolio.get("holdings", [])
+                if h.get("ticker") == ticker
+            ),
             None,
         )
         if not existing:
@@ -155,7 +178,10 @@ def _check_approval_gate(db, ticker, action, total_usd, trade_id, portfolio, not
 
     if action == "sell" and get_knob("gate_full_exits", True):
         existing = next(
-            (h for h in portfolio.get("holdings", []) if h.get("ticker") == ticker),
+            (
+                h for h in portfolio.get("holdings", [])
+                if h.get("ticker") == ticker
+            ),
             None,
         )
         if existing and total_usd >= existing.get("market_value", 0) * 0.95:
@@ -170,11 +196,21 @@ def _check_approval_gate(db, ticker, action, total_usd, trade_id, portfolio, not
         trade.status = "pending_approval"
         db.commit()
 
+    # Include quantity so the dashboard can display "3.5 shares @ $143.25"
+    qty_info = ""
+    if trade:
+        qty = f"{trade.quantity:.4f}".rstrip("0").rstrip(".")
+        qty_info = f" · {qty} shares @ ${trade.price_usd:.2f}"
+
+    reason_str = ", ".join(reasons)
     alert = Alert(
         id=str(uuid.uuid4()),
         ticker=ticker,
         alert_type="approval_request",
-        message=f"Trade requires your approval ({', '.join(reasons)}): {action.upper()} {ticker} ~${total_usd:.2f}",
+        message=(
+            f"Trade requires your approval ({reason_str}): "
+            f"{action.upper()} {ticker}{qty_info} (~${total_usd:.2f})"
+        ),
         severity="warning",
         trade_id=trade_id,
         acknowledged=False,
@@ -186,47 +222,13 @@ def _check_approval_gate(db, ticker, action, total_usd, trade_id, portfolio, not
     if notifier:
         try:
             notifier.send_sms(
-                f"[Trader] Approval needed: {action.upper()} {ticker} ~${total_usd:.2f}. Reason: {', '.join(reasons)}. Approve at your dashboard."
+                f"[Trader] Approval needed: {action.upper()} {ticker} "
+                f"~${total_usd:.2f}. Reason: {reason_str}. "
+                "Approve at your dashboard."
             )
         except Exception as e:
             logger.warning("Failed to send approval SMS: %s", e)
 
-    timeout_minutes = get_knob("approval_timeout_minutes", 10)
-    approved_event = threading.Event()
-    rejected_event = threading.Event()
-
-    def _wait_for_decision():
-        deadline = timeout_minutes * 60
-        interval = 5
-        elapsed = 0
-        while elapsed < deadline:
-            db2 = SessionLocal()
-            try:
-                t = db2.query(Trade).filter(Trade.id == trade_id).first()
-                if t and t.status == "executed":
-                    approved_event.set()
-                    return
-                if t and t.status == "rejected":
-                    rejected_event.set()
-                    return
-            finally:
-                db2.close()
-            import time
-            time.sleep(interval)
-            elapsed += interval
-        rejected_event.set()
-
-    watcher = threading.Thread(target=_wait_for_decision, daemon=True)
-    watcher.start()
-    watcher.join(timeout=timeout_minutes * 60 + 5)
-
-    if rejected_event.is_set():
-        db2 = SessionLocal()
-        try:
-            t = db2.query(Trade).filter(Trade.id == trade_id).first()
-            if t and t.status == "pending_approval":
-                t.status = "cancelled"
-                db2.commit()
-        finally:
-            db2.close()
-        raise GuardrailViolation(f"Trade not approved within {timeout_minutes} minutes — cancelled")
+    raise ApprovalPending(
+        f"Trade {trade_id} queued for approval: {reason_str}"
+    )

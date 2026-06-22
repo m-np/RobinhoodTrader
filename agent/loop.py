@@ -5,43 +5,16 @@ from datetime import datetime
 
 import anthropic
 
-from agent.guardrails import GuardrailViolation, check_all
+from agent.guardrails import ApprovalPending, GuardrailViolation, check_all
 from agent.mcp_client import McpConnectionError, RobinhoodMCPClient
 from agent.token_manager import McpAuthError, get_token_manager
 from agent.wallet import check_wallet
+from brain import build_system_prompt
 from config import settings
-from db.models import Alert, Blocklist, ConfigKnob, Trade, Watchlist
+from db.models import Alert, Blocklist, ConfigKnob, PortfolioSnapshot, Trade, Watchlist
 from db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
-
-SYSTEM_PROMPT = """You are an autonomous trading agent managing a dedicated Robinhood agentic trading account.
-Your goal is long-term portfolio growth while strictly respecting all guardrail rules.
-
-Your account is completely isolated from the user's main Robinhood portfolio.
-You only trade using funds deposited in this agentic account.
-
-On each cycle you should:
-1. Review the current portfolio and recent performance
-2. Check watchlist stocks for entry/exit opportunities
-3. Identify any market waves affecting held positions
-4. Recommend or execute trades within the configured rules
-5. Always explain your reasoning concisely
-
-You have access to Robinhood MCP tools (get_portfolio, get_quote, get_order_history,
-analyze_concentration, read_analyst_notes) for research and data gathering.
-
-For executing trades, always use the LOCAL place_order and cancel_order tools —
-never call Robinhood MCP trade tools directly. Local tools enforce safety guardrails
-before any order reaches Robinhood.
-
-You NEVER:
-- Trade tickers on the blocklist
-- Exceed position size limits
-- Trade asset classes that are toggled off
-- Place orders without checking guardrails first
-
-Always be conservative. Preserving capital is more important than chasing gains."""
 
 
 def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None) -> None:
@@ -92,7 +65,7 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
     create_kwargs = dict(
         model="claude-sonnet-4-6",
         max_tokens=4096,
-        system=SYSTEM_PROMPT,
+        system=build_system_prompt(context["knobs"]),
         tools=local_tools,
         messages=messages,
     )
@@ -143,7 +116,7 @@ def _build_context(mcp_client: RobinhoodMCPClient) -> dict:
         recent_alerts = [
             {"type": a.alert_type, "message": a.message, "severity": a.severity}
             for a in db.query(Alert).filter(
-                Alert.acknowledged == False  # noqa: E712
+                Alert.acknowledged.is_(False)
             ).limit(10).all()
         ]
         last_trades = [
@@ -161,6 +134,7 @@ def _build_context(mcp_client: RobinhoodMCPClient) -> dict:
         db.close()
 
     portfolio = mcp_client.get_portfolio()
+    portfolio = _enrich_today_pnl(portfolio)
 
     return {
         "portfolio": portfolio,
@@ -170,6 +144,36 @@ def _build_context(mcp_client: RobinhoodMCPClient) -> dict:
         "recent_alerts": recent_alerts,
         "last_trades": last_trades,
     }
+
+
+def _enrich_today_pnl(portfolio: dict) -> dict:
+    """Patch today_pnl/pnl_pct using the first intraday portfolio snapshot.
+
+    Robinhood's API doesn't expose intraday P&L, so we derive it from the
+    earliest PortfolioSnapshot recorded today. Without this the daily-loss-halt
+    guardrail would never fire (it would always see 0.0%).
+    """
+    today_start = datetime.utcnow().replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    db = SessionLocal()
+    try:
+        first = (
+            db.query(PortfolioSnapshot)
+            .filter(PortfolioSnapshot.created_at >= today_start)
+            .order_by(PortfolioSnapshot.created_at.asc())
+            .first()
+        )
+        if first and first.total_value > 0:
+            current = portfolio.get("total_value", 0.0)
+            pnl = current - first.total_value
+            portfolio["today_pnl"] = round(pnl, 2)
+            portfolio["today_pnl_pct"] = round(
+                (pnl / first.total_value) * 100, 2
+            )
+    finally:
+        db.close()
+    return portfolio
 
 
 def _handle_tool_call(
@@ -254,8 +258,13 @@ def _place_order(
             trade_id=trade_id,
             notifier=notifier,
         )
+    except ApprovalPending:
+        logger.info("Trade %s queued for human approval", trade_id)
+        return {"pending": True, "trade_id": trade_id}
     except GuardrailViolation as e:
-        logger.warning("Guardrail violation for %s %s: %s", action, ticker, e)
+        logger.warning(
+            "Guardrail violation for %s %s: %s", action, ticker, e
+        )
         db = SessionLocal()
         try:
             t = db.query(Trade).filter(Trade.id == trade_id).first()

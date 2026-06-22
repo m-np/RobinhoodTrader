@@ -33,9 +33,12 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
 
-    # Market data (optional — used by market wave alerts)
-    POLYGON_API_KEY: str = ""
-    ALPHA_VANTAGE_KEY: str = ""
+    # HTTP Basic Auth password for the dashboard (leave empty to disable)
+    DASHBOARD_SECRET: str = ""
+
+    # Timeouts (seconds)
+    MCP_CALL_TIMEOUT: int = 30
+    OAUTH_TIMEOUT: int = 15
 
     # App
     DEPLOYMENT_MODE: str = "local"

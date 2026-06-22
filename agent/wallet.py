@@ -54,7 +54,7 @@ def _clear_wallet_low_alerts() -> None:
     try:
         db.query(Alert).filter(
             Alert.alert_type == "wallet_low",
-            Alert.acknowledged == False,
+            Alert.acknowledged.is_(False),
         ).update({"acknowledged": True})
         db.commit()
     except Exception as e:
@@ -70,7 +70,7 @@ def _create_not_connected_alert() -> None:
         existing = db.query(Alert).filter(
             Alert.alert_type == "wallet_low",
             Alert.message.contains("not connected"),
-            Alert.acknowledged == False,
+            Alert.acknowledged.is_(False),
         ).first()
         if existing:
             return

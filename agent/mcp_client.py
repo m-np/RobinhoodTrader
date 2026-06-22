@@ -79,7 +79,7 @@ class RobinhoodMCPClient:
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/event-stream",
             },
-            timeout=30,
+            timeout=settings.MCP_CALL_TIMEOUT,
         )
         resp.raise_for_status()
         sid = resp.headers.get("Mcp-Session-Id")
@@ -95,7 +95,7 @@ class RobinhoodMCPClient:
                 self._url,
                 json={"jsonrpc": "2.0", "method": "notifications/initialized"},
                 headers=h,
-                timeout=10,
+                timeout=settings.MCP_CALL_TIMEOUT,
             )
         except Exception:
             pass
@@ -122,7 +122,7 @@ class RobinhoodMCPClient:
                 self._url,
                 json=payload,
                 headers=self._headers(token),
-                timeout=30,
+                timeout=settings.MCP_CALL_TIMEOUT,
             )
             if resp.status_code == 401 and retry:
                 logger.warning("MCP 401 — refreshing token")
@@ -291,12 +291,9 @@ class RobinhoodMCPClient:
         upper = [t.upper() for t in tickers]
         empty = {t: {"price": None, "change_pct": None} for t in upper}
         try:
-            # Resolve agentic account first — same prerequisite as get_portfolio().
-            # This establishes the full MCP session context before calling quotes.
-            acct = self._get_agentic_account()
             result = self._call(
                 "get_equity_quotes",
-                {"symbols": upper, "account_number": acct},
+                {"symbols": upper},
             )
             # Use the same parsing path as get_portfolio()
             items = result.get("data", {}).get("results", [])
@@ -355,14 +352,23 @@ class RobinhoodMCPClient:
         order_type: str = "market",
     ) -> dict:
         acct = self._get_agentic_account()
-        return self._call("place_equity_order", {
+        result = self._call("place_equity_order", {
             "account_number": acct,
             "symbol": ticker.upper(),
-            "side": action,       # "buy" | "sell"
-            "type": order_type,   # "market" | "limit"
+            "side": action,
+            "type": order_type,
             "quantity": quantity,
             "time_in_force": "gfd",
         })
+        order_id = (
+            result.get("data", {}).get("order", {}).get("id")
+            or result.get("data", {}).get("id")
+        )
+        logger.info(
+            "Order submitted: %s %s x%.4f — RH order_id=%s",
+            action, ticker.upper(), quantity, order_id or "unknown",
+        )
+        return result
 
     def cancel_order(self, order_id: str) -> dict:
         acct = self._get_agentic_account()

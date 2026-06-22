@@ -9,6 +9,18 @@
   </div>
 </div>
 
+<!-- Robinhood connection -->
+<div class="settings-card">
+  <div class="settings-card-title">Robinhood connection</div>
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Status</span>
+      <span class="knob-desc" id="rh-status-desc">Checking…</span>
+    </div>
+    <a href="/auth/robinhood" class="btn" id="rh-connect-btn">Connect Robinhood</a>
+  </div>
+</div>
+
 <!-- Asset classes -->
 <div class="settings-card">
   <div class="settings-card-title">Asset classes</div>
@@ -264,4 +276,142 @@
     </label>
   </div>
 </div>
+
+<!-- Notifications -->
+<div class="settings-card">
+  <div class="settings-card-title">Notification delivery</div>
+
+  <!-- Email row -->
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Email</span>
+      <span class="knob-desc" id="smtp-status">Checking…</span>
+    </div>
+    <span class="badge" id="smtp-badge"></span>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Send reports to</span>
+      <span class="knob-desc">Delivery address for email summaries</span>
+    </div>
+    <div class="notify-input-row">
+      <input type="email" id="notify-email-input" class="notify-text-input" placeholder="you@example.com">
+      <button class="btn-sm" onclick="saveNotifyEmail()">Save</button>
+      <button class="btn-sm" id="test-email-btn" onclick="sendTestNotify('email')" disabled>Send test</button>
+    </div>
+  </div>
+
+  <!-- SMS row -->
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">SMS</span>
+      <span class="knob-desc" id="twilio-status">Checking…</span>
+    </div>
+    <span class="badge" id="twilio-badge"></span>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Send alerts to</span>
+      <span class="knob-desc">Mobile number for approval alerts and trade summaries</span>
+    </div>
+    <div class="notify-input-row">
+      <input type="tel" id="notify-phone-input" class="notify-text-input" placeholder="+1 555 123 4567">
+      <button class="btn-sm" onclick="saveNotifyPhone()">Save</button>
+      <button class="btn-sm" id="test-sms-btn" onclick="sendTestNotify('sms')" disabled>Send test</button>
+    </div>
+  </div>
+
+  <p class="notify-hint">
+    SMTP credentials (host, port, user, password) and Twilio API keys (account SID, auth token, from number)
+    are configured via <code>.env</code>. The email address and phone number above are saved to the database
+    and can be changed here any time without a restart.
+  </p>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async function () {
+  try {
+    const res = await fetch('/api/notify/status');
+    const d = await res.json();
+
+    const smtpBadge = document.getElementById('smtp-badge');
+    const smtpStatus = document.getElementById('smtp-status');
+    if (d.smtp_configured) {
+      smtpBadge.textContent = 'Configured';
+      smtpBadge.className = 'badge badge-green';
+      smtpStatus.textContent = 'SMTP credentials loaded from .env';
+      document.getElementById('test-email-btn').disabled = false;
+    } else {
+      smtpBadge.textContent = 'Not set';
+      smtpBadge.className = 'badge badge-amber';
+      smtpStatus.textContent = 'Add SMTP_USER, SMTP_PASSWORD, SMTP_HOST to .env';
+    }
+
+    const twilioBadge = document.getElementById('twilio-badge');
+    const twilioStatus = document.getElementById('twilio-status');
+    if (d.twilio_configured) {
+      twilioBadge.textContent = 'Configured';
+      twilioBadge.className = 'badge badge-green';
+      twilioStatus.textContent = 'Twilio credentials loaded from .env';
+      document.getElementById('test-sms-btn').disabled = false;
+    } else {
+      twilioBadge.textContent = 'Not set';
+      twilioBadge.className = 'badge badge-amber';
+      twilioStatus.textContent = 'Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN to .env';
+    }
+
+    if (d.notify_email) document.getElementById('notify-email-input').value = d.notify_email;
+    if (d.notify_phone) document.getElementById('notify-phone-input').value = d.notify_phone;
+  } catch (e) { console.error('notify status:', e); }
+})();
+
+async function saveNotifyEmail() {
+  const email = document.getElementById('notify-email-input').value.trim();
+  await fetch('/api/notify/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notify_email: email }),
+  });
+}
+
+async function saveNotifyPhone() {
+  const phone = document.getElementById('notify-phone-input').value.trim();
+  await fetch('/api/notify/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notify_phone: phone }),
+  });
+}
+
+async function sendTestNotify(type) {
+  const btn = document.getElementById('test-' + type + '-btn');
+  const orig = btn.textContent;
+  btn.textContent = 'Sending…';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/notify/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type }),
+    });
+    const d = await res.json();
+    const ok = d.results && d.results[type] === true;
+    btn.textContent = ok ? 'Sent ✓' : 'Failed ✗';
+    btn.style.color = ok ? 'var(--green)' : 'var(--red)';
+    setTimeout(() => {
+      btn.textContent = orig;
+      btn.style.color = '';
+      btn.disabled = false;
+    }, 3500);
+  } catch {
+    btn.textContent = 'Error';
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+  }
+}
+</script>
 {% endblock %}

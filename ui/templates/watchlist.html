@@ -10,7 +10,7 @@
 <div class="page-header">
   <div>
     <h1 class="page-title">Watchlist</h1>
-    <p class="page-sub" id="watchlist-status">Prices update every 30 seconds.</p>
+    <p class="page-sub" id="watchlist-status">Loading prices…</p>
   </div>
   <button class="btn" onclick="showAddWatch()">+ Add ticker</button>
 </div>
@@ -34,11 +34,12 @@
         <th>Added</th>
         <th>Latest price</th>
         <th>Today's change</th>
+        <th style="min-width:90px">24h chart</th>
         <th></th>
       </tr>
     </thead>
     <tbody id="watchlist-tbody">
-      <tr><td colspan="6" style="color:var(--text-3);text-align:center;padding:20px">Loading...</td></tr>
+      <tr><td colspan="7" style="color:var(--text-3);text-align:center;padding:20px">Loading...</td></tr>
     </tbody>
   </table>
 </div>

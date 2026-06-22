@@ -11,6 +11,8 @@ from agent.loop import run_agent_cycle
 from agent.mcp_client import RobinhoodMCPClient
 from alerts.market_waves import check_market_waves
 from config import settings
+from mirrors.capitol_trades import check_and_queue_mirror_trades
+from mirrors.sec_edgar import check_and_queue_institutional_mirrors
 from reports.generator import generate_report
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,163 @@ def _run_market_waves():
         logger.exception("Market wave check error: %s", e)
 
 
+def _refresh_price_cache():
+    """Fetch live quotes for all watchlist tickers and store in the in-memory cache."""
+    try:
+        from db.models import Watchlist
+        from db.session import SessionLocal
+        from agent.price_cache import update as cache_update
+
+        db = SessionLocal()
+        try:
+            tickers = [r.ticker for r in db.query(Watchlist).all()]
+        finally:
+            db.close()
+
+        if not tickers:
+            return
+        quotes = _get_mcp().get_quotes_batch(tickers)
+        cache_update(quotes)
+        logger.debug("Price cache refreshed: %d tickers", len(quotes))
+    except Exception as e:
+        logger.warning("Price cache refresh error: %s", e)
+
+
+def _track_watchlist_prices():
+    """Snapshot current cached quotes to DB every 5 min for sparkline history."""
+    try:
+        import uuid as _uuid
+        from datetime import datetime as _dt
+        from db.models import Watchlist, WatchlistPriceSnapshot
+        from db.session import SessionLocal
+        from agent.price_cache import get_all as cache_get_all
+
+        db = SessionLocal()
+        try:
+            tickers = [r.ticker for r in db.query(Watchlist).all()]
+            if not tickers:
+                return
+            cache = cache_get_all()
+            if not cache:
+                return
+            now = _dt.utcnow()
+            added = 0
+            for ticker in tickers:
+                q = cache.get(ticker)
+                if q and q.get("price") is not None:
+                    db.add(WatchlistPriceSnapshot(
+                        id=str(_uuid.uuid4()),
+                        ticker=ticker,
+                        price=q["price"],
+                        change_pct=q.get("change_pct"),
+                        recorded_at=now,
+                    ))
+                    added += 1
+            db.commit()
+            if added:
+                logger.info("Watchlist price snapshot: %d tickers recorded", added)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.exception("Watchlist price tracking error: %s", e)
+
+
+def _process_approved_trades():
+    """Execute dashboard-approved trades and cancel timed-out pending ones."""
+    try:
+        from datetime import timedelta
+        from db.models import Trade
+        from db.session import SessionLocal
+
+        timeout_minutes = get_knob("approval_timeout_minutes", 10)
+        cutoff = datetime.utcnow() - timedelta(minutes=timeout_minutes)
+
+        db = SessionLocal()
+        try:
+            pending = (
+                db.query(Trade)
+                .filter(Trade.status.in_(["pending_approval", "approved"]))
+                .all()
+            )
+        finally:
+            db.close()
+
+        if not pending:
+            return
+
+        mcp = _get_mcp()
+
+        for trade in pending:
+            if trade.status == "pending_approval" and trade.created_at < cutoff:
+                db = SessionLocal()
+                try:
+                    t = db.query(Trade).filter(Trade.id == trade.id).first()
+                    if t and t.status == "pending_approval":
+                        t.status = "cancelled"
+                        db.commit()
+                        logger.info(
+                            "Trade %s timed out after %d min, cancelled",
+                            trade.id, timeout_minutes,
+                        )
+                finally:
+                    db.close()
+
+            elif trade.status == "approved":
+                try:
+                    mcp.place_order(
+                        trade.ticker,
+                        trade.action,
+                        trade.quantity,
+                        trade.asset_class or "stock",
+                    )
+                    db = SessionLocal()
+                    try:
+                        t = db.query(Trade).filter(
+                            Trade.id == trade.id
+                        ).first()
+                        if t:
+                            t.status = "executed"
+                            t.executed_at = datetime.utcnow()
+                            db.commit()
+                        logger.info(
+                            "Approved trade executed: %s %s x%.4f",
+                            trade.action, trade.ticker, trade.quantity,
+                        )
+                    finally:
+                        db.close()
+                except Exception as e:
+                    logger.error(
+                        "Failed to execute approved trade %s: %s",
+                        trade.id, e,
+                    )
+                    db = SessionLocal()
+                    try:
+                        t = db.query(Trade).filter(
+                            Trade.id == trade.id
+                        ).first()
+                        if t and t.status == "approved":
+                            t.status = "rejected"
+                            db.commit()
+                    finally:
+                        db.close()
+    except Exception as e:
+        logger.exception("Pending trade processor error: %s", e)
+
+
+def _run_congressional_mirrors():
+    try:
+        check_and_queue_mirror_trades(_get_mcp())
+    except Exception as e:
+        logger.exception("Congressional mirror check error: %s", e)
+
+
+def _run_institutional_mirrors():
+    try:
+        check_and_queue_institutional_mirrors(_get_mcp())
+    except Exception as e:
+        logger.exception("Institutional mirror check error: %s", e)
+
+
 def _run_daily_report():
     freq = get_knob("report_frequency", "off")
     if freq in ("daily", "both"):
@@ -93,17 +252,61 @@ def start_scheduler() -> BackgroundScheduler:
 
     scheduler.add_job(
         _run_agent,
-        trigger=IntervalTrigger(minutes=settings.AGENT_INTERVAL_MINUTES),
+        trigger=IntervalTrigger(
+            minutes=settings.AGENT_INTERVAL_MINUTES, jitter=30
+        ),
         id="agent_cycle",
         name="Agent trading cycle",
         replace_existing=True,
     )
 
     scheduler.add_job(
+        _process_approved_trades,
+        trigger=IntervalTrigger(seconds=30, jitter=5),
+        id="pending_trade_processor",
+        name="Approved trade executor",
+        next_run_time=datetime.now(ET),
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
         _run_market_waves,
-        trigger=IntervalTrigger(minutes=5),
+        trigger=IntervalTrigger(minutes=5, jitter=20),
         id="market_waves",
         name="Market wave check",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        _refresh_price_cache,
+        trigger=IntervalTrigger(seconds=5),
+        id="price_cache_refresh",
+        name="Watchlist live price cache",
+        next_run_time=datetime.now(ET),
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        _track_watchlist_prices,
+        trigger=IntervalTrigger(minutes=5, jitter=20),
+        id="watchlist_price_tracker",
+        name="Watchlist price snapshot (sparklines)",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        _run_congressional_mirrors,
+        trigger=IntervalTrigger(hours=1, jitter=120),
+        id="congressional_mirrors",
+        name="Congressional trade mirror check",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        _run_institutional_mirrors,
+        trigger=IntervalTrigger(hours=6, jitter=300),
+        id="institutional_mirrors",
+        name="SEC EDGAR 13F institutional mirror check",
         replace_existing=True,
     )
 
@@ -130,7 +333,7 @@ def start_scheduler() -> BackgroundScheduler:
 
     scheduler.start()
     _scheduler = scheduler
-    logger.info("Scheduler started: agent every %d min, waves every 5 min", settings.AGENT_INTERVAL_MINUTES)
+    logger.info("Scheduler started: agent every %d min, waves+watchlist every 5 min", settings.AGENT_INTERVAL_MINUTES)
     return scheduler
 
 

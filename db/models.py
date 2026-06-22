@@ -110,6 +110,18 @@ class PortfolioSnapshot(Base):
     created_at = Column(DateTime, default=_now, nullable=False)
 
 
+class WatchlistPriceSnapshot(Base):
+    """Periodic price snapshot for each watchlist ticker — used for sparklines."""
+
+    __tablename__ = "watchlist_price_snapshots"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    ticker = Column(String, nullable=False, index=True)
+    price = Column(Float, nullable=True)
+    change_pct = Column(Float, nullable=True)
+    recorded_at = Column(DateTime, default=_now, nullable=False)
+
+
 class RobinhoodToken(Base):
     """Stores exactly one row — the current OAuth tokens, encrypted at rest."""
 
@@ -148,12 +160,34 @@ def get_tokens(db) -> dict | None:
             "expires_at": row.expires_at,
         }
     except Exception:
-        # Key mismatch or corrupted data — treat as not connected
         import logging
         logging.getLogger(__name__).warning(
             "Token decryption failed — ENCRYPTION_KEY may have changed. "
             "Re-authenticate at /auth/robinhood."
         )
+        # Surface to the dashboard so the user sees the problem immediately.
+        try:
+            existing = db.query(Alert).filter(
+                Alert.alert_type == "system",
+                Alert.acknowledged.is_(False),
+                Alert.message.contains("ENCRYPTION_KEY"),
+            ).first()
+            if not existing:
+                db.add(Alert(
+                    id=str(uuid.uuid4()),
+                    alert_type="system",
+                    message=(
+                        "Robinhood token decryption failed — "
+                        "ENCRYPTION_KEY may have changed. "
+                        "Re-authenticate at /auth/robinhood."
+                    ),
+                    severity="critical",
+                    acknowledged=False,
+                    created_at=datetime.utcnow(),
+                ))
+                db.commit()
+        except Exception:
+            pass
         return None
 
 

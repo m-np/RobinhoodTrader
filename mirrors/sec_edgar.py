@@ -68,7 +68,7 @@ def check_and_queue_institutional_mirrors(mcp_client=None) -> None:
     try:
         sources = db.query(MirrorSource).filter(
             MirrorSource.source_type == "institutional",
-            MirrorSource.enabled == True,
+            MirrorSource.enabled.is_(True),
         ).all()
 
         inst_map = {i["slug"]: i for i in KNOWN_INSTITUTIONS}

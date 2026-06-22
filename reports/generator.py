@@ -6,7 +6,7 @@ import anthropic
 
 from agent.guardrails import get_knob
 from config import settings
-from db.models import Report, Trade
+from db.models import PortfolioSnapshot, Report, Trade
 from db.session import SessionLocal
 from notifications.notifier import get_notifier
 
@@ -30,12 +30,6 @@ def generate_report(report_type: str = "weekly") -> Report | None:
         if not trades:
             logger.info("No executed trades in period — skipping %s report", report_type)
             return None
-        trades = (
-            db.query(Trade)
-            .filter(Trade.created_at >= cutoff, Trade.status == "executed")
-            .order_by(Trade.created_at.desc())
-            .all()
-        )
 
         trade_lines = []
         for t in trades:
@@ -68,11 +62,32 @@ def generate_report(report_type: str = "weekly") -> Report | None:
         )
         summary = response.content[0].text
 
+        # Derive P&L for the period from portfolio snapshots
+        first_snap = (
+            db.query(PortfolioSnapshot)
+            .filter(PortfolioSnapshot.created_at >= cutoff)
+            .order_by(PortfolioSnapshot.created_at.asc())
+            .first()
+        )
+        last_snap = (
+            db.query(PortfolioSnapshot)
+            .order_by(PortfolioSnapshot.created_at.desc())
+            .first()
+        )
+        if first_snap and last_snap and first_snap.total_value > 0:
+            pnl_usd = round(last_snap.total_value - first_snap.total_value, 2)
+            pnl_pct = round((pnl_usd / first_snap.total_value) * 100, 2)
+        else:
+            pnl_usd = None
+            pnl_pct = None
+
         title = f"{'Daily' if report_type == 'daily' else 'Weekly'} report — {datetime.utcnow().strftime('%b %d, %Y')}"
         report = Report(
             id=str(uuid.uuid4()),
             title=title,
             summary=summary,
+            pnl_usd=pnl_usd,
+            pnl_pct=pnl_pct,
             report_type=report_type,
             created_at=datetime.utcnow(),
         )

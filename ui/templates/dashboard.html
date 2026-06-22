@@ -76,10 +76,10 @@
       </div>
     </section>
 
-    <!-- Live signals -->
+    <!-- Pending decisions -->
     <section class="section">
       <div class="section-header">
-        <span class="section-title">Live signals</span>
+        <span class="section-title">Pending decisions</span>
         <button class="btn-sm" onclick="refreshSignals()">Refresh</button>
       </div>
       <div id="signals-feed">
@@ -191,6 +191,20 @@ async function loadPortfolioChart(period) {
   const canvas = document.getElementById('portfolio-chart');
   const empty = document.getElementById('chart-empty');
   const gainRow = document.getElementById('chart-gain-row');
+
+  // Pin the live portfolio value as the rightmost point so the chart always
+  // extends to "now" even when agent snapshots are stale (e.g. after hours,
+  // auth expiry, or agent cycle failures).
+  const live = typeof _livePortfolio !== 'undefined' ? _livePortfolio : null;
+  if (live && live.total_value > 0) {
+    const nowIso = new Date().toISOString();
+    const lastTs = data.length ? new Date(data[data.length - 1].ts) : null;
+    // Only append if live value is meaningfully newer than the last snapshot
+    if (!lastTs || (Date.now() - lastTs.getTime()) > 60 * 1000) {
+      data.push({ ts: nowIso, total_value: live.total_value, _live: true });
+    }
+  }
+
   if (!data.length) {
     canvas.style.display = 'none';
     empty.style.display = 'block';
@@ -225,6 +239,15 @@ async function loadPortfolioChart(period) {
   const periodLabels = {'1d':'today','7d':'past 7 days','30d':'past month','90d':'past 3 months'};
   gainLabel.textContent = periodLabels[period] || period;
 
+  // Per-point radius: hide all except the live "now" marker
+  const pointRadii = values.map((_, i) => {
+    if (data[i]._live) return 4;
+    return data.length > 30 ? 0 : 2;
+  });
+  const pointStyles = values.map((_, i) => data[i]._live ? 'circle' : 'circle');
+  const pointBgColors = values.map((_, i) => data[i]._live ? '#fff' : color);
+  const pointBorderWidths = values.map((_, i) => data[i]._live ? 2 : 0);
+
   if (_portfolioChart) _portfolioChart.destroy();
   _portfolioChart = new Chart(canvas.getContext('2d'), {
     type: 'line',
@@ -235,7 +258,10 @@ async function loadPortfolioChart(period) {
         borderColor: color,
         backgroundColor: bgColor,
         borderWidth: 1.5,
-        pointRadius: data.length > 30 ? 0 : 2,
+        pointRadius: pointRadii,
+        pointBackgroundColor: pointBgColors,
+        pointBorderColor: color,
+        pointBorderWidth: pointBorderWidths,
         fill: true,
         tension: 0.3,
       }]
