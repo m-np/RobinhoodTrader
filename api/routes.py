@@ -147,7 +147,7 @@ async def api_search(q: str = ""):
     mcp = _get_mcp()
     try:
         result = mcp._call(
-            "search", {"query": q, "asset_type": "equity", "limit": 8}
+            "search", {"query": q, "asset_type": "instrument", "limit": 8}
         )
         items = result.get(
             "data", {}
