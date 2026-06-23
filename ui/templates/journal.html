@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+{% block title %}Thesis Journal — Agentic trader{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Thesis Journal</h1>
+    <p class="page-sub" id="journal-sub">Loading...</p>
+  </div>
+  <button class="btn" onclick="showAddForm()">+ Add entry</button>
+</div>
+
+<!-- Add entry form -->
+<div id="add-form" class="card" style="display:none;margin-bottom:16px">
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+    <div>
+      <label style="font-size:12px;color:var(--text-3)">Ticker</label>
+      <input id="f-ticker" type="text" placeholder="NVDA"
+             style="width:100%;margin-top:4px" oninput="this.value=this.value.toUpperCase()">
+    </div>
+    <div>
+      <label style="font-size:12px;color:var(--text-3)">Type</label>
+      <select id="f-type" style="width:100%;margin-top:4px">
+        <option value="hypothesis">hypothesis</option>
+        <option value="observation">observation</option>
+        <option value="update">update</option>
+        <option value="entry">entry</option>
+        <option value="exit">exit</option>
+        <option value="alert">alert</option>
+      </select>
+    </div>
+    <div>
+      <label style="font-size:12px;color:var(--text-3)">Sentiment</label>
+      <select id="f-sentiment" style="width:100%;margin-top:4px">
+        <option value="">— none —</option>
+        <option value="strengthening">strengthening</option>
+        <option value="neutral">neutral</option>
+        <option value="challenged">challenged</option>
+        <option value="broken">broken</option>
+      </select>
+    </div>
+    <div>
+      <label style="font-size:12px;color:var(--text-3)">Tier</label>
+      <select id="f-tier" style="width:100%;margin-top:4px">
+        <option value="">— none —</option>
+        <option value="core">core</option>
+        <option value="growth">growth</option>
+        <option value="moonshot">moonshot</option>
+      </select>
+    </div>
+  </div>
+  <textarea id="f-text" rows="3" placeholder="Enter your thesis note..."
+            style="width:100%;margin-bottom:10px;resize:vertical"></textarea>
+  <div style="display:flex;gap:8px">
+    <button class="btn" onclick="submitEntry()">Save entry</button>
+    <button class="btn btn-ghost" onclick="hideAddForm()">Cancel</button>
+    <span id="form-error" style="color:#f87171;font-size:13px;align-self:center"></span>
+  </div>
+</div>
+
+<!-- Ticker status overview -->
+<div class="card" id="status-card" style="margin-bottom:16px">
+  <table class="data-table" id="status-table">
+    <thead>
+      <tr>
+        <th>Ticker</th>
+        <th>Tier</th>
+        <th>Entries</th>
+        <th>Latest sentiment</th>
+        <th>Thesis score</th>
+        <th>Position</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="status-tbody">
+      <tr><td colspan="7" style="color:var(--text-3);text-align:center;padding:20px">Loading...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Detail panel for selected ticker -->
+<div id="detail-panel" style="display:none">
+  <div class="page-header" style="margin-bottom:12px">
+    <h2 style="font-size:16px;font-weight:600" id="detail-title">Entries</h2>
+    <button class="btn btn-ghost btn-sm" onclick="closeDetail()">Close</button>
+  </div>
+  <div class="card">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th style="width:50px">ID</th>
+          <th style="width:110px">Type</th>
+          <th style="width:130px">Sentiment</th>
+          <th style="width:80px">Tier</th>
+          <th style="width:140px">Date</th>
+          <th>Note</th>
+          <th style="width:40px"></th>
+        </tr>
+      </thead>
+      <tbody id="detail-tbody"></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SENTIMENT_COLOR = {
+  strengthening: '#34d399',
+  neutral: '#94a3b8',
+  challenged: '#fb923c',
+  broken: '#f87171',
+};
+const TIER_COLOR = {
+  core: '#818cf8',
+  growth: '#38bdf8',
+  moonshot: '#fbbf24',
+};
+
+let allStatus = [];
+
+async function loadStatus() {
+  const res = await fetch('/api/journal');
+  allStatus = await res.json();
+  renderStatus();
+  const sub = document.getElementById('journal-sub');
+  sub.textContent = allStatus.length
+    ? `${allStatus.length} ticker${allStatus.length !== 1 ? 's' : ''} tracked`
+    : 'No entries yet — add your first thesis note below.';
+}
+
+function renderStatus() {
+  const tbody = document.getElementById('status-tbody');
+  if (!allStatus.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-3);text-align:center;padding:20px">No journal entries yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = allStatus.map(r => {
+    const sent = r.latest_sentiment || '—';
+    const sentColor = SENTIMENT_COLOR[r.latest_sentiment] || 'var(--text-3)';
+    const tier = r.tier || '—';
+    const tierColor = TIER_COLOR[r.tier] || 'var(--text-3)';
+    const pos = r.has_open_position
+      ? '<span style="color:#34d399;font-size:11px;font-weight:600">OPEN</span>'
+      : '';
+    const score = r.thesis_score;
+    const scoreBar = `<span style="font-weight:600">${score}</span>
+      <span style="color:var(--text-3);font-size:11px">/10</span>`;
+    return `<tr>
+      <td style="font-weight:600">${r.ticker}</td>
+      <td><span style="color:${tierColor}">${tier}</span></td>
+      <td>${r.entry_count}</td>
+      <td><span style="color:${sentColor}">${sent}</span></td>
+      <td>${scoreBar}</td>
+      <td>${pos}</td>
+      <td>
+        <button class="btn-sm" onclick="loadDetail('${r.ticker}')">View</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadDetail(ticker) {
+  document.getElementById('detail-title').textContent = `${ticker} — journal entries`;
+  document.getElementById('detail-panel').style.display = 'block';
+  document.getElementById('detail-tbody').innerHTML =
+    '<tr><td colspan="7" style="color:var(--text-3);text-align:center;padding:16px">Loading...</td></tr>';
+
+  const res = await fetch(`/api/journal/${ticker}`);
+  const entries = await res.json();
+  const tbody = document.getElementById('detail-tbody');
+
+  if (!entries.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-3);text-align:center;padding:16px">No entries.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = entries.map(e => {
+    const sent = e.sentiment || '—';
+    const sentColor = SENTIMENT_COLOR[e.sentiment] || 'var(--text-3)';
+    const tier = e.tier || '—';
+    const tierColor = TIER_COLOR[e.tier] || 'var(--text-3)';
+    const date = e.created_at ? e.created_at.slice(0, 16).replace('T', ' ') : '';
+    return `<tr>
+      <td style="color:var(--text-3)">${e.id}</td>
+      <td><span style="font-size:11px;text-transform:uppercase;letter-spacing:.5px">${e.entry_type}</span></td>
+      <td><span style="color:${sentColor}">${sent}</span></td>
+      <td><span style="color:${tierColor}">${tier}</span></td>
+      <td style="font-size:12px;color:var(--text-3)">${date}</td>
+      <td style="font-size:13px">${e.text}</td>
+      <td>
+        <button class="btn-sm" style="color:#f87171"
+          onclick="deleteEntry('${ticker}',${e.id})">✕</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('detail-panel').scrollIntoView({behavior:'smooth'});
+}
+
+function closeDetail() {
+  document.getElementById('detail-panel').style.display = 'none';
+}
+
+async function deleteEntry(ticker, entryId) {
+  if (!confirm(`Delete entry #${entryId} for ${ticker}?`)) return;
+  await fetch(`/api/journal/${ticker}/${entryId}`, {method:'DELETE'});
+  await loadDetail(ticker);
+  await loadStatus();
+}
+
+function showAddForm() {
+  document.getElementById('add-form').style.display = 'block';
+  document.getElementById('f-ticker').focus();
+}
+function hideAddForm() {
+  document.getElementById('add-form').style.display = 'none';
+  document.getElementById('form-error').textContent = '';
+}
+
+async function submitEntry() {
+  const ticker  = document.getElementById('f-ticker').value.trim().toUpperCase();
+  const type    = document.getElementById('f-type').value;
+  const sent    = document.getElementById('f-sentiment').value || null;
+  const tier    = document.getElementById('f-tier').value || null;
+  const text    = document.getElementById('f-text').value.trim();
+  const errEl   = document.getElementById('form-error');
+
+  if (!ticker) { errEl.textContent = 'Ticker is required.'; return; }
+  if (!text)   { errEl.textContent = 'Note text is required.'; return; }
+  errEl.textContent = '';
+
+  const res = await fetch(`/api/journal/${ticker}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      entry_type: type, text, sentiment: sent, tier
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    errEl.textContent = err.detail || 'Error saving entry.';
+    return;
+  }
+  document.getElementById('f-ticker').value = '';
+  document.getElementById('f-text').value = '';
+  document.getElementById('f-sentiment').value = '';
+  document.getElementById('f-tier').value = '';
+  hideAddForm();
+  await loadStatus();
+  const existing = document.getElementById('detail-title').textContent;
+  if (existing.startsWith(ticker + ' —')) await loadDetail(ticker);
+}
+
+loadStatus();
+</script>
+{% endblock %}

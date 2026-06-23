@@ -2,14 +2,18 @@
 Brain loader — assembles the agent's system prompt from skill files.
 
 Skills live in brain/skills/<name>.md. Each skill is a markdown document
-describing a trading domain (stocks, options, etc.). The base skill is
-always included; asset-class skills are included when their corresponding
-config knob is enabled.
+describing a trading domain. Strategy skills (base, aggressive_growth,
+thesis_journal, red_day_protocol, catalyst_calendar) are always loaded.
+Asset-class skills are loaded when their config knob is enabled.
 
-To add a new skill:
+To add a new always-on skill:
   1. Drop a .md file into brain/skills/
-  2. Add an entry to SKILL_GATES mapping filename → config knob name
-  3. Enable the knob via the dashboard settings
+  2. Add its stem to _ALWAYS_LOAD below.
+
+To add a knob-gated skill:
+  1. Drop a .md file into brain/skills/
+  2. Add an entry to SKILL_GATES: filename_stem → knob_key
+  3. Enable the knob via the dashboard settings.
 """
 import logging
 from pathlib import Path
@@ -18,8 +22,16 @@ logger = logging.getLogger(__name__)
 
 SKILLS_DIR = Path(__file__).parent / "skills"
 
-# Maps skill filename (without .md) → config knob that gates it.
-# A skill is included when its knob is truthy. "base" is always loaded.
+# Always loaded — core strategy skills.
+_ALWAYS_LOAD = [
+    "base",
+    "aggressive_growth",
+    "thesis_journal",
+    "red_day_protocol",
+    "catalyst_calendar",
+]
+
+# Loaded only when the named config knob is truthy.
 SKILL_GATES: dict[str, str] = {
     "stocks": "asset_stocks",
     "options": "asset_options",
@@ -37,8 +49,8 @@ def load_skill(name: str) -> str:
 
 
 def active_skill_names(knobs: dict) -> list[str]:
-    """Return ordered list of skill names to load given current knob values."""
-    names = ["base"]
+    """Return ordered list of skill names given current knob values."""
+    names = list(_ALWAYS_LOAD)
     for skill, knob in SKILL_GATES.items():
         if knobs.get(knob, False):
             names.append(skill)
@@ -46,7 +58,7 @@ def active_skill_names(knobs: dict) -> list[str]:
 
 
 def build_system_prompt(knobs: dict) -> str:
-    """Assemble the full system prompt from base + all active skills."""
+    """Assemble full system prompt from strategy skills + active asset skills."""
     parts: list[str] = []
     for name in active_skill_names(knobs):
         content = load_skill(name)
@@ -57,7 +69,7 @@ def build_system_prompt(knobs: dict) -> str:
 
     prompt = "\n\n---\n\n".join(parts)
     logger.debug(
-        "Brain assembled: skills=%s, prompt_length=%d",
+        "Brain assembled: skills=%s, chars=%d",
         active_skill_names(knobs), len(prompt),
     )
     return prompt

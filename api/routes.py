@@ -85,6 +85,95 @@ async def discover_page(request: Request):
     )
 
 
+@router.get("/journal", response_class=HTMLResponse)
+async def journal_page(request: Request):
+    return templates.TemplateResponse(
+        request, "journal.html", {"active": "journal"}
+    )
+
+
+# ── Journal API ───────────────────────────────────────────────────────────────
+
+class JournalEntryIn(BaseModel):
+    entry_type: str
+    text: str
+    sentiment: Optional[str] = None
+    tier: Optional[str] = None
+
+
+@router.get("/api/journal")
+async def api_journal_status():
+    """Return thesis status for every ticker that has a journal entry."""
+    from brain.journal_store import get_watchlist_with_status, init_db
+    init_db()
+    return get_watchlist_with_status()
+
+
+@router.get("/api/journal/{ticker}")
+async def api_journal_ticker(ticker: str):
+    """Return all journal entries for a ticker, newest first."""
+    from brain.journal_store import init_db, read_journal
+    init_db()
+    return read_journal(ticker.upper())
+
+
+@router.post("/api/journal/{ticker}", status_code=201)
+async def api_journal_add(ticker: str, body: JournalEntryIn):
+    """Add a journal entry for a ticker. Returns the new entry id."""
+    from brain.journal_store import (
+        VALID_ENTRY_TYPES,
+        VALID_SENTIMENTS,
+        VALID_TIERS,
+        init_db,
+        write_entry,
+    )
+    init_db()
+    if body.entry_type not in VALID_ENTRY_TYPES:
+        raise HTTPException(
+            400,
+            f"entry_type must be one of {sorted(VALID_ENTRY_TYPES)}",
+        )
+    if body.sentiment and body.sentiment not in VALID_SENTIMENTS:
+        raise HTTPException(
+            400,
+            f"sentiment must be one of {sorted(VALID_SENTIMENTS)}",
+        )
+    if body.tier and body.tier not in VALID_TIERS:
+        raise HTTPException(
+            400, f"tier must be one of {sorted(VALID_TIERS)}"
+        )
+    entry_id = write_entry(
+        ticker=ticker.upper(),
+        entry_type=body.entry_type,
+        text=body.text,
+        sentiment=body.sentiment,
+        tier=body.tier,
+    )
+    return {"id": entry_id, "ticker": ticker.upper()}
+
+
+@router.delete("/api/journal/{ticker}/{entry_id}")
+async def api_journal_delete(ticker: str, entry_id: int):
+    """Delete a single journal entry by id."""
+    import sqlite3
+    db_path = "data/trader.db"
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT id FROM journal_entries "
+        "WHERE id = ? AND ticker = ?",
+        (entry_id, ticker.upper()),
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Entry not found")
+    conn.execute(
+        "DELETE FROM journal_entries WHERE id = ?", (entry_id,)
+    )
+    conn.commit()
+    conn.close()
+    return {"deleted": entry_id}
+
+
 # ── Portfolio / wallet ────────────────────────────────────
 
 @router.get("/api/portfolio")

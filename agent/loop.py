@@ -136,6 +136,26 @@ def _build_context(mcp_client: RobinhoodMCPClient) -> dict:
     portfolio = mcp_client.get_portfolio()
     portfolio = _enrich_today_pnl(portfolio)
 
+    # Brain signals — market conditions, earnings alerts, thesis scores
+    market = _brain_market_snapshot()
+    earnings_alerts: list = []
+    journal_status: list = []
+    try:
+        from brain.catalyst_checker import (  # noqa: PLC0415
+            get_earnings_alerts,
+        )
+        from brain.journal_store import (  # noqa: PLC0415
+            get_watchlist_with_status,
+            init_db,
+        )
+        init_db()
+        earnings_alerts = get_earnings_alerts(watchlist)
+        journal_status = get_watchlist_with_status(
+            tickers=watchlist
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Brain context signals failed: %s", exc)
+
     return {
         "portfolio": portfolio,
         "watchlist": watchlist,
@@ -143,6 +163,9 @@ def _build_context(mcp_client: RobinhoodMCPClient) -> dict:
         "knobs": knobs,
         "recent_alerts": recent_alerts,
         "last_trades": last_trades,
+        "market_snapshot": market,
+        "earnings_alerts": earnings_alerts,
+        "journal_status": journal_status,
     }
 
 
@@ -174,6 +197,68 @@ def _enrich_today_pnl(portfolio: dict) -> dict:
     finally:
         db.close()
     return portfolio
+
+
+def _brain_market_snapshot() -> dict:
+    """Fetch live market conditions; return safe defaults on failure."""
+    try:
+        from brain.red_day_detector import (  # noqa: PLC0415
+            classify_red_day,
+            get_market_snapshot,
+        )
+        snap = get_market_snapshot()
+        rd = classify_red_day(
+            snap["sp500_change_pct"], snap["vix"]
+        )
+        return {
+            **snap,
+            "red_day_level": rd["level"],
+            "red_day_label": rd["label"],
+            "max_cash_deploy_pct": rd["max_cash_deploy_pct"],
+            "eligible_tiers": rd["eligible_tiers"],
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Market snapshot failed: %s", exc)
+        return {
+            "sp500_change_pct": 0.0,
+            "vix": 15.0,
+            "red_day_level": 0,
+            "red_day_label": "none",
+        }
+
+
+def _brain_gates(ticker: str, action: str) -> tuple[bool, str]:
+    """Extra pre-trade gates: earnings proximity and thesis sentiment.
+
+    Returns (True, 'ok') when the trade may proceed, or
+    (False, reason) when it should be blocked.
+    Only applies to BUY orders.
+    """
+    if action != "buy":
+        return True, "ok"
+    try:
+        from brain.catalyst_checker import (  # noqa: PLC0415
+            check_earnings_gate,
+        )
+        can_trade, reason = check_earnings_gate(ticker)
+        if not can_trade:
+            return False, f"EARNINGS GATE: {reason}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Earnings gate check failed for %s: %s", ticker, exc)
+
+    try:
+        from brain.journal_store import (  # noqa: PLC0415
+            get_latest_sentiment,
+            has_hypothesis,
+        )
+        if has_hypothesis(ticker):
+            sent = get_latest_sentiment(ticker) or "neutral"
+            if sent == "broken":
+                return False, f"THESIS BROKEN: {ticker}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Journal check failed for %s: %s", ticker, exc)
+
+    return True, "ok"
 
 
 def _handle_tool_call(
@@ -275,6 +360,20 @@ def _place_order(
             db.close()
         return {"success": False, "reason": str(e)}
 
+    # Brain gates: earnings proximity and thesis sentiment
+    ok, brain_reason = _brain_gates(ticker, action)
+    if not ok:
+        logger.warning("Brain gate blocked %s %s: %s", action, ticker, brain_reason)
+        db = SessionLocal()
+        try:
+            t = db.query(Trade).filter(Trade.id == trade_id).first()
+            if t and t.status not in ("executed", "cancelled"):
+                t.status = "rejected"
+                db.commit()
+        finally:
+            db.close()
+        return {"success": False, "reason": brain_reason}
+
     try:
         result = mcp_client.place_order(ticker, action, quantity, asset_class)
         db = SessionLocal()
@@ -335,9 +434,14 @@ def _agent_tools() -> list:
                         "type": "string",
                         "enum": ["stock", "crypto", "options", "futures", "event_contract"],
                     },
+                    "tier": {
+                        "type": "string",
+                        "enum": ["core", "growth", "moonshot"],
+                        "description": "Conviction tier from thesis journal",
+                    },
                     "rationale": {
                         "type": "string",
-                        "description": "Brief explanation of why this trade is recommended",
+                        "description": "Why this trade is recommended",
                     },
                 },
                 "required": ["ticker", "action", "quantity"],
