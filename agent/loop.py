@@ -308,6 +308,7 @@ def _place_order(
     quantity = float(inputs["quantity"])
     asset_class = inputs.get("asset_class", "stock")
     rationale = inputs.get("rationale", "")
+    trade_type = inputs.get("trade_type", "auto")
 
     quote = mcp_client.get_quote(ticker)
     price = quote.get("price") or 0.0
@@ -342,6 +343,7 @@ def _place_order(
             portfolio=portfolio,
             trade_id=trade_id,
             notifier=notifier,
+            trade_type=trade_type,
         )
     except ApprovalPending:
         logger.info("Trade %s queued for human approval", trade_id)
@@ -438,6 +440,14 @@ def _agent_tools() -> list:
                         "type": "string",
                         "enum": ["core", "growth", "moonshot"],
                         "description": "Conviction tier from thesis journal",
+                    },
+                    "trade_type": {
+                        "type": "string",
+                        "enum": [
+                            "new_position", "scale_in", "rebalance",
+                            "stop_loss", "profit_take", "full_exit",
+                        ],
+                        "description": "Why this order is being placed",
                     },
                     "rationale": {
                         "type": "string",

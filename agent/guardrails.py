@@ -65,9 +65,14 @@ def check_all(
     portfolio: dict,
     trade_id: str,
     notifier=None,
+    trade_type: str = "auto",
 ) -> None:
     """Run all guardrail checks. Raises GuardrailViolation on breach or
-    ApprovalPending when the trade needs human sign-off before execution."""
+    ApprovalPending when the trade needs human sign-off before execution.
+
+    trade_type values: new_position | scale_in | rebalance | stop_loss |
+                       profit_take | full_exit | auto (default)
+    """
     db = SessionLocal()
     try:
         _check_asset_class(asset_class)
@@ -76,7 +81,8 @@ def check_all(
         _check_daily_loss_halt(portfolio)
         _check_position_size(ticker, total_usd, portfolio)
         _check_approval_gate(
-            db, ticker, action, total_usd, trade_id, portfolio, notifier
+            db, ticker, action, total_usd, trade_id,
+            portfolio, notifier, trade_type,
         )
     finally:
         db.close()
@@ -152,7 +158,8 @@ def _check_position_size(
 
 
 def _check_approval_gate(
-    db, ticker, action, total_usd, trade_id, portfolio, notifier
+    db, ticker, action, total_usd, trade_id,
+    portfolio, notifier, trade_type: str = "auto",
 ) -> None:
     needs_approval = False
     reasons = []
@@ -164,29 +171,44 @@ def _check_approval_gate(
             f"trade value ${total_usd:.2f} exceeds threshold ${threshold}"
         )
 
+    existing = next(
+        (h for h in portfolio.get("holdings", []) if h.get("ticker") == ticker),
+        None,
+    )
+
     if action == "buy" and get_knob("gate_new_positions", True):
-        existing = next(
-            (
-                h for h in portfolio.get("holdings", [])
-                if h.get("ticker") == ticker
-            ),
-            None,
-        )
         if not existing:
             needs_approval = True
             reasons.append("opening new position")
 
-    if action == "sell" and get_knob("gate_full_exits", True):
-        existing = next(
-            (
-                h for h in portfolio.get("holdings", [])
-                if h.get("ticker") == ticker
-            ),
-            None,
-        )
-        if existing and total_usd >= existing.get("market_value", 0) * 0.95:
-            needs_approval = True
-            reasons.append("full position exit")
+    if action == "sell":
+        if get_knob("gate_full_exits", True):
+            if existing and total_usd >= existing.get("market_value", 0) * 0.95:
+                needs_approval = True
+                reasons.append("full position exit")
+
+        # gate_rebalance: partial sells that are not full exits
+        if get_knob("gate_rebalance", False):
+            is_full_exit = (
+                existing
+                and total_usd >= existing.get("market_value", 0) * 0.95
+            )
+            is_rebalance = trade_type == "rebalance" or (
+                existing and not is_full_exit
+            )
+            if is_rebalance:
+                needs_approval = True
+                reasons.append("rebalance / partial trim")
+
+        # gate_stop_loss: sell when position has unrealised loss
+        if get_knob("gate_stop_loss", False):
+            is_stop = trade_type == "stop_loss" or (
+                existing
+                and existing.get("unrealized_pnl", 0) < 0
+            )
+            if is_stop:
+                needs_approval = True
+                reasons.append("stop-loss sell")
 
     if not needs_approval:
         return

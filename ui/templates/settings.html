@@ -199,6 +199,22 @@
   </div>
 </div>
 
+<!-- Mirror trading -->
+<div class="settings-card">
+  <div class="settings-card-title">Mirror trading</div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Auto-execute mirror trades</span>
+      <span class="knob-desc">Queue mirror disclosures instantly without dashboard approval. Blocklist, daily-loss halt, trade cap, and position-size guardrails still apply.</span>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="knob-mirror_auto_execute" onchange="saveKnob('mirror_auto_execute', this.checked)">
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+</div>
+
 <!-- Reports -->
 <div class="settings-card">
   <div class="settings-card-title">Summary reports</div>

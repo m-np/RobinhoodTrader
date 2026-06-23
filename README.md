@@ -517,17 +517,68 @@ RobinhoodTrader/
 
 ---
 
+## Current limitations
+
+### Asset classes
+
+The settings UI has toggles for stocks, crypto, options, futures, and event contracts. Only **stocks are fully implemented end-to-end**. The others are in various states:
+
+| Asset class | Toggle | Skill file | Order execution | What's missing |
+|---|---|---|---|---|
+| Stocks | ✓ | ✓ `stocks.md` | ✓ `place_equity_order` | Nothing — fully working |
+| Options | ✓ | ✓ `options.md` | ✗ | `place_option_order` call with strategy params (strike, expiry, legs, call/put). The current order layer only calls the equity endpoint regardless of asset class. |
+| Crypto | ✓ | ✗ | ✗ | `crypto.md` skill file; verify whether Robinhood MCP uses the equity or a separate crypto endpoint for BTC/ETH orders. |
+| Futures | ✓ | ✗ | ✗ | `futures.md` skill file; futures-specific MCP order call. |
+| Event contracts | ✓ | ✗ | ✗ | Skill file; event contract MCP order call. |
+
+Until these are implemented, enabling crypto/options/futures/events in Settings will let Claude discuss those asset classes but **any order it tries to place will fail silently** because the MCP layer routes everything through `place_equity_order`.
+
+### Agent data access
+
+Claude only sees what the Robinhood MCP exposes per cycle:
+- **Live quote** (price + daily % change) — no OHLCV bars, no intraday data
+- **Portfolio state** (holdings, cash, market value, daily P&L)
+- **Earnings calendar** — from yfinance, not Robinhood MCP
+
+Claude cannot compute RSI, MACD, Bollinger Bands, or any indicator that requires historical price series. Its technical analysis is limited to what it can infer from the current price, daily move, and volume relative to the 30-day average.
+
+### Mirror sources
+
+Currently supports:
+- Congressional disclosures via [Capitol Trades](https://capitoltrades.com) (real-time)
+- Institutional 13F filings via [SEC EDGAR](https://www.sec.gov/cgi-bin/browse-edgar) (quarterly)
+
+Not yet supported:
+- Insider Form 4 filings (executives buying/selling their own company stock)
+- ETF holdings (tracking what major ETFs hold and rebalance into)
+- Activist positions (13D/13G filings signalling activist entry)
+
+### Other gaps
+
+| Feature | Status |
+|---|---|
+| Backtesting / paper trading | Not implemented. The agent loop always places real orders against the live agentic account. |
+| Stop-loss levels per position | The `gate_stop_loss` gate exists but there is no per-position stop price stored. The agent uses its own judgement on exit timing. |
+| Sector allocation tracking | `pre_trade_check.py` has sector cap logic but the agent loop does not currently pass live sector allocation data into it. |
+| Multi-account support | Single Robinhood agentic account only. |
+| Mobile / PWA | The dashboard is responsive but there is no push notification support or installable PWA manifest. |
+| Auth beyond Basic Auth | `DASHBOARD_SECRET` enables HTTP Basic Auth. No OAuth2, SSO, or per-user access control. |
+
+---
+
 ## Contributing
 
-Forks and contributions welcome. Ideas for what could be built on top:
+Forks and contributions welcome. The gaps above are good starting points. Other ideas:
 
 - Multi-broker support (Alpaca, Interactive Brokers via their MCP servers)
-- Options strategy execution (`asset_options` toggle is wired; order layer needs strategy types)
-- Backtesting mode — replay historical data through the agent loop without placing real orders
-- Mobile-friendly PWA with push notifications
-- Richer mirror sources — insider Form 4 filings, ETF holdings, activist positions
+- Options strategy execution — the skill and knob are wired; the order layer needs `place_option_order` with strategy params
+- Crypto execution — skill file + verify correct MCP endpoint
+- Backtesting mode — replay a context snapshot through the agent loop without placing real orders
+- Mobile-friendly PWA with push notifications for approval requests
+- Richer mirror sources — insider Form 4, ETF holdings, activist 13D/13G
 - Telegram / Discord bot for approvals instead of SMS
-- More skill files — macro regime filters, sector rotation, earnings plays
+- Sector allocation live data fed into the pre-trade check
+- More skill files — macro regime filters, sector rotation, earnings momentum plays
 
 Open an issue before starting large changes.
 

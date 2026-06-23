@@ -4,8 +4,15 @@ from datetime import datetime
 
 import httpx
 
-from agent.guardrails import get_knob
-from db.models import Alert, MirrorSource, Trade
+from agent.guardrails import (
+    GuardrailViolation,
+    _check_blocklist,
+    _check_daily_loss_halt,
+    _check_daily_trade_limit,
+    _check_position_size,
+    get_knob,
+)
+from db.models import Alert, Blocklist, MirrorSource, Trade
 from db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -152,11 +159,40 @@ def _queue_mirror_trade(
 ) -> None:
     """Size and queue a mirror trade for auto-execution.
 
+    Runs blocklist, daily-loss-halt, daily-trade-limit, and position-size
+    guardrails before queuing. Position sized as:
+        portfolio_value * scale_factor / current_price
+
     Trade is created with status='approved' so the pending-trade executor
-    picks it up within 30 seconds without requiring dashboard interaction.
-    Sizing: portfolio_value * scale_factor / current_price.
+    picks it up within 30 seconds without dashboard interaction.
     """
     try:
+        # Blocklist — never mirror a ticker on the Don't Buy list
+        try:
+            _check_blocklist(db, ticker)
+        except GuardrailViolation as gv:
+            logger.info("Mirror skipped (blocklist): %s — %s", ticker, gv)
+            return
+
+        portfolio = mcp_client.get_portfolio()
+        total_value = portfolio.get("total_value", 0.0)
+        if total_value <= 0:
+            return
+
+        # Daily loss halt — don't add exposure if we're already down badly
+        try:
+            _check_daily_loss_halt(portfolio)
+        except GuardrailViolation as gv:
+            logger.info("Mirror skipped (loss halt): %s — %s", ticker, gv)
+            return
+
+        # Daily trade limit — mirrors count toward the daily cap
+        try:
+            _check_daily_trade_limit(db)
+        except GuardrailViolation as gv:
+            logger.info("Mirror skipped (trade limit): %s — %s", ticker, gv)
+            return
+
         quote = mcp_client.get_quote(ticker)
         price = quote.get("price")
         if not price or price <= 0:
@@ -165,15 +201,21 @@ def _queue_mirror_trade(
             )
             return
 
-        total_value = mcp_client.get_portfolio().get("total_value", 0.0)
-        if total_value <= 0:
-            return
-
-        quantity = round((total_value * source.scale_factor) / price, 4)
+        total_usd = round(total_value * source.scale_factor, 2)
+        quantity = round(total_usd / price, 4)
         if quantity < 0.0001:
             logger.info(
                 "Mirror auto-execute: quantity too small for %s (%.6f)",
                 ticker, quantity,
+            )
+            return
+
+        # Position size cap — scale_factor must not breach max_position_pct
+        try:
+            _check_position_size(ticker, total_usd, portfolio)
+        except GuardrailViolation as gv:
+            logger.info(
+                "Mirror skipped (position cap): %s — %s", ticker, gv
             )
             return
 
@@ -184,19 +226,20 @@ def _queue_mirror_trade(
             asset_class="stock",
             quantity=quantity,
             price_usd=price,
-            total_usd=round(quantity * price, 2),
+            total_usd=total_usd,
             status="approved",
             rationale=(
                 f"Auto-mirror: {source.name} disclosed "
-                f"{action.upper()} {ticker} at "
-                f"{source.scale_factor * 100:.1f}% portfolio scale"
+                f"{action.upper()} {ticker} — "
+                f"{source.scale_factor * 100:.1f}% portfolio scale "
+                f"(${total_usd:,.0f})"
             ),
             mirror_source=source.name,
             created_at=datetime.utcnow(),
         ))
         logger.info(
-            "Mirror trade queued: %s %s x%.4f (source: %s)",
-            action, ticker, quantity, source.name,
+            "Mirror trade queued: %s %s x%.4f @ $%.2f (source: %s)",
+            action, ticker, quantity, price, source.name,
         )
     except Exception as e:
         logger.warning("Failed to queue mirror trade for %s: %s", ticker, e)
