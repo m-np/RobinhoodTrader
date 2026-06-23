@@ -3,9 +3,10 @@ set -e
 
 ENV_NAME="robinhoodtrader"
 PYTHON_VERSION="3.11"
+OS="$(uname -s)"
 
 echo "═════════════════════════════════════════════════════════════════════════════"
-echo " RobinhoodTrader — leaf VM setup"
+echo " RobinhoodTrader — leaf VM setup  ($OS)"
 echo "═════════════════════════════════════════════════════════════════════════════"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -41,19 +42,30 @@ if command -v psql &>/dev/null; then
     echo "  PostgreSQL already installed — skipping."
 else
     echo "  Installing PostgreSQL..."
-    sudo apt-get install -y postgresql postgresql-contrib
-    sudo systemctl start postgresql
-    sudo systemctl enable postgresql
+    if [ "$OS" = "Darwin" ]; then
+        brew install postgresql@14
+        brew services start postgresql@14
+        # Make psql available in PATH for this session
+        export PATH="$(brew --prefix postgresql@14)/bin:$PATH"
+    else
+        sudo apt-get install -y postgresql postgresql-contrib
+        sudo systemctl start postgresql
+        sudo systemctl enable postgresql
+    fi
     echo "  PostgreSQL installed and started."
 fi
 
 echo "  Creating database '$ENV_NAME'..."
-# Try as current user first (works if a PostgreSQL role for $USER already exists).
-# If that fails with a missing-role error, create a superuser role for $USER and retry.
-if ! createdb "$ENV_NAME" 2>/dev/null; then
-    echo "  Current user has no PostgreSQL role — creating one..."
-    sudo -u postgres createuser --superuser "$USER" 2>/dev/null || true
-    createdb "$ENV_NAME" || true
+if [ "$OS" = "Darwin" ]; then
+    # Homebrew postgres creates a role matching $USER by default — createdb works directly
+    createdb "$ENV_NAME" 2>/dev/null || echo "  Database already exists — skipping."
+else
+    # Try as current user first; if no role exists, create one via the postgres superuser
+    if ! createdb "$ENV_NAME" 2>/dev/null; then
+        echo "  Current user has no PostgreSQL role — creating one..."
+        sudo -u postgres createuser --superuser "$USER" 2>/dev/null || true
+        createdb "$ENV_NAME" || true
+    fi
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -72,15 +84,19 @@ echo "  Key generated."
 echo ""
 echo "[5/6] .env setup ────────────────────────────────────────────────────────────"
 
-if [[ ! -f ".env" ]]; then
+if [ ! -f ".env" ]; then
     cp .env.example .env
     echo "  Created .env from .env.example."
 else
     echo "  .env already exists — leaving it in place."
 fi
 
-# Inject the generated Fernet key into ENCRYPTION_KEY= line
-sed -i "s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=${FERNET_KEY}|" .env
+# sed -i requires an explicit backup extension on macOS; use '' for no backup
+if [ "$OS" = "Darwin" ]; then
+    sed -i '' "s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=${FERNET_KEY}|" .env
+else
+    sed -i "s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=${FERNET_KEY}|" .env
+fi
 echo "  ENCRYPTION_KEY injected into .env."
 
 echo ""
