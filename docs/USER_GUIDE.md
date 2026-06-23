@@ -1,5 +1,7 @@
 # User Guide — Agentic Trader
 
+> **Disclaimer:** This software is for educational purposes only and is not financial advice. Automated trading carries significant risk. You are solely responsible for any trades placed through this tool and any resulting gains or losses. See the full [disclaimer](../README.md#disclaimer) in the README before using.
+
 This guide is for people who want to understand the **experience** of using the Agentic Trader — not how to install it, but how to think about it, how to use it day-to-day, and how to get the most out of it. If you're looking for setup instructions, start with the [README](../README.md).
 
 ---

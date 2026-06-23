@@ -586,7 +586,23 @@ Open an issue before starting large changes.
 
 ## Disclaimer
 
-This software is for personal use and educational purposes only. It is not financial advice. Automated trading carries significant risk. You are solely responsible for any trades placed through this tool and any resulting gains or losses. Always review your guardrail settings before enabling live trading.
+**This software is provided for educational and informational purposes only. It is not financial advice, investment advice, trading advice, or any other form of professional advice.**
+
+By using this software you acknowledge and agree to the following:
+
+**No financial advice.** Nothing in this repository, its documentation, or its outputs constitutes a recommendation to buy or sell any security, cryptocurrency, or other financial instrument. The thesis journal, agent decisions, and mirror trade signals are not investment recommendations.
+
+**Automated trading risk.** Automated trading systems can and do lose money. Past performance of any trading strategy, whether simulated or live, is not indicative of future results. Market conditions change. The agent can make decisions that result in significant financial losses.
+
+**You are solely responsible.** All trades placed through this tool are your responsibility. The authors and contributors of this project are not liable for any financial loss, data loss, or other damages arising from use or misuse of this software, including but not limited to losses from incorrect configuration, software bugs, API failures, or unexpected market behavior.
+
+**No warranty.** This software is provided "as is" without warranty of any kind, express or implied. There is no guarantee that the software will behave as documented, that guardrails will prevent all unintended trades, or that the Robinhood MCP connection will execute orders as expected.
+
+**Third-party services.** This project connects to Robinhood, Anthropic Claude, Capitol Trades, and SEC EDGAR. Your use of those services is subject to their respective terms of service. The authors of this project have no affiliation with any of these services.
+
+**Regulatory compliance.** It is your responsibility to ensure that your use of automated trading software complies with applicable laws and regulations in your jurisdiction, including but not limited to securities laws, tax obligations, and brokerage terms of service.
+
+Use at your own risk. Never deploy this with capital you cannot afford to lose.
 
 ---
 
