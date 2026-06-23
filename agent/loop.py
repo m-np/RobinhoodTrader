@@ -27,7 +27,7 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
         if reason == "not_connected":
             logger.info("Agent cycle skipped: Robinhood not connected")
         else:
-            logger.info("Agent cycle skipped: wallet not funded ($%.2f)", wallet["balance"])
+            logger.info("Agent cycle skipped: wallet not funded")
         return
 
     context = _build_context(mcp_client)

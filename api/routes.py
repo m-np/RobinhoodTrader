@@ -1,6 +1,8 @@
 import base64
 import hashlib
 import json
+import logging
+import re
 import secrets
 import threading
 import time as _time
@@ -8,6 +10,10 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Optional
 from urllib.parse import urlencode
+
+logger = logging.getLogger(__name__)
+
+TICKER_RE = re.compile(r"^[A-Z0-9.\-]{1,10}$")
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,6 +28,7 @@ from agent.guardrails import (
 from agent.loop import _enrich_today_pnl
 from agent.mcp_client import RobinhoodMCPClient
 from api.deps import get_db
+from api.limiter import limiter
 from config import settings
 from db.models import (
     Alert, Blocklist, ConfigKnob, MirrorSource,
@@ -155,6 +162,8 @@ async def api_journal_add(ticker: str, body: JournalEntryIn):
 @router.delete("/api/journal/{ticker}/{entry_id}")
 async def api_journal_delete(ticker: str, entry_id: int):
     """Delete a single journal entry by id."""
+    if not TICKER_RE.match(ticker.upper()):
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
     import sqlite3
     db_path = "data/trader.db"
     conn = sqlite3.connect(db_path)
@@ -231,7 +240,7 @@ async def api_portfolio_history(
 @router.get("/api/search")
 async def api_search(q: str = ""):
     """Search tickers/companies via Robinhood MCP."""
-    if not q or len(q) < 1:
+    if not q or len(q) < 1 or len(q) > 30:
         return []
     mcp = _get_mcp()
     try:
@@ -265,8 +274,9 @@ class QuickTradeInput(BaseModel):
 
 
 @router.post("/api/trades/quick")
+@limiter.limit("10/minute")
 async def quick_trade(
-    body: QuickTradeInput, db: Session = Depends(get_db)
+    request: Request, body: QuickTradeInput, db: Session = Depends(get_db)
 ):
     """Execute a quick buy/sell from a signal card."""
     from agent.mcp_client import McpConnectionError
@@ -374,7 +384,10 @@ async def api_trades(limit: int = 50, db: Session = Depends(get_db)):
 
 
 @router.post("/api/trades/{trade_id}/approve")
-async def approve_trade(trade_id: str, db: Session = Depends(get_db)):
+@limiter.limit("20/minute")
+async def approve_trade(
+    request: Request, trade_id: str, db: Session = Depends(get_db)
+):
     trade = db.query(Trade).filter(Trade.id == trade_id).first()
     if not trade:
         raise HTTPException(status_code=404, detail="Trade not found")
@@ -387,7 +400,10 @@ async def approve_trade(trade_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/api/trades/{trade_id}/reject")
-async def reject_trade(trade_id: str, db: Session = Depends(get_db)):
+@limiter.limit("20/minute")
+async def reject_trade(
+    request: Request, trade_id: str, db: Session = Depends(get_db)
+):
     trade = db.query(Trade).filter(Trade.id == trade_id).first()
     if not trade:
         raise HTTPException(status_code=404, detail="Trade not found")
@@ -978,16 +994,20 @@ async def auth_robinhood_callback(
         resp.raise_for_status()
         data = resp.json()
     except httpx.HTTPStatusError as e:
+        logger.error(
+            "Token exchange failed (%s): %s",
+            e.response.status_code,
+            e.response.text,
+        )
         raise HTTPException(
             status_code=502,
-            detail=(
-                f"Token exchange failed "
-                f"({e.response.status_code}): {e.response.text}"
-            ),
+            detail="Authentication failed. Please try again.",
         ) from e
     except httpx.RequestError as e:
+        logger.error("Token exchange request error: %s", e)
         raise HTTPException(
-            status_code=502, detail=f"Token exchange error: {e}"
+            status_code=502,
+            detail="Authentication failed. Please try again.",
         ) from e
 
     expires_at = datetime.utcnow() + timedelta(

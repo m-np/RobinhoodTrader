@@ -12,7 +12,11 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from starlette_csrf import CSRFMiddleware
 
+from api.limiter import limiter
 from api.routes import router
 from config import settings
 
@@ -147,14 +151,27 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Agentic Trader", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(
+    CSRFMiddleware,
+    secret=settings.DASHBOARD_SECRET or "fallback-csrf-key",
+    exempt_urls=[
+        r"^/auth/robinhood/callback",
+        r"^/api/robinhood/",
+    ],
+)
 
 
 @app.middleware("http")
 async def basic_auth_middleware(request: Request, call_next):
-    if not settings.DASHBOARD_SECRET:
-        return await call_next(request)
     if request.url.path.startswith("/static"):
         return await call_next(request)
+    if not settings.DASHBOARD_SECRET:
+        return Response(
+            content="DASHBOARD_SECRET not configured. Set it in .env and restart.",
+            status_code=503,
+        )
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Basic "):
         try:
