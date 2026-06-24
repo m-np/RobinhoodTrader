@@ -364,7 +364,13 @@
       <span class="knob-desc">Restore from a backup file — existing records are kept, duplicates skipped</span>
     </div>
     <div class="notify-input-row">
-      <input type="file" id="import-file" accept=".json" style="display:none" onchange="importData(this)">
+      <form id="import-form" method="POST" action="/api/import"
+            enctype="multipart/form-data" target="import-iframe" style="display:none">
+        <input type="file" name="file" id="import-file" accept=".json"
+               onchange="submitImport()">
+      </form>
+      <iframe name="import-iframe" id="import-iframe" style="display:none"
+              onload="handleImportResult()"></iframe>
       <button class="btn" onclick="document.getElementById('import-file').click()">Choose file…</button>
     </div>
   </div>
@@ -436,41 +442,44 @@ function exportData() {
   const btn = document.getElementById('export-btn');
   btn.textContent = 'Preparing…';
   btn.disabled = true;
-  const a = document.createElement('a');
-  a.href = '/api/export';
-  a.click();
+  window.location.href = '/api/export';
   setTimeout(() => {
     btn.textContent = 'Download backup';
     btn.disabled = false;
   }, 2000);
 }
 
-async function importData(input) {
-  const file = input.files[0];
-  if (!file) return;
+let _importPending = false;
 
-  const statusEl = document.getElementById('transfer-status');
+function submitImport() {
+  if (!document.getElementById('import-file').files[0]) return;
   const outputEl = document.getElementById('transfer-output');
-  statusEl.style.display = 'block';
+  document.getElementById('transfer-status').style.display = 'block';
   outputEl.style.color = 'var(--text-2)';
   outputEl.textContent = 'Uploading…';
+  _importPending = true;
+  document.getElementById('import-form').submit();
+}
 
-  const form = new FormData();
-  form.append('file', file);
+function handleImportResult() {
+  if (!_importPending) return;
+  _importPending = false;
+
+  const iframe = document.getElementById('import-iframe');
+  const outputEl = document.getElementById('transfer-output');
 
   try {
-    const res = await fetch('/api/import', { method: 'POST', body: form });
-    const d = await res.json();
+    const text = iframe.contentDocument.body.innerText;
+    const d = JSON.parse(text);
 
-    if (!res.ok) {
+    if (d.detail) {
       outputEl.style.color = 'var(--red)';
-      outputEl.textContent = 'Error: ' + (d.detail || res.statusText);
+      outputEl.textContent = 'Error: ' + d.detail;
       return;
     }
 
     const lines = ['Import complete:'];
-    const tables = Object.keys(d.imported || {});
-    for (const t of tables) {
+    for (const t of Object.keys(d.imported || {})) {
       const n = d.imported[t];
       const s = d.skipped?.[t] ?? 0;
       lines.push(`  ${t.padEnd(24)} +${n} new   ${s} skipped`);
@@ -484,12 +493,12 @@ async function importData(input) {
       outputEl.style.color = 'var(--green)';
     }
     outputEl.textContent = lines.join('\n');
-  } catch (e) {
+  } catch {
     outputEl.style.color = 'var(--red)';
-    outputEl.textContent = 'Request failed: ' + e.message;
+    outputEl.textContent = 'Upload failed — check the terminal for details.';
   }
 
-  input.value = '';
+  document.getElementById('import-file').value = '';
 }
 
 async function sendTestNotify(type) {

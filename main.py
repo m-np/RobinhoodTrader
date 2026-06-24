@@ -160,6 +160,8 @@ app.add_middleware(
     exempt_urls=[
         r"^/auth/robinhood/callback",
         r"^/api/robinhood/",
+        r"^/api/export",
+        r"^/api/import",
     ],
 )
 
