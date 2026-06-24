@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import re
 import secrets
 import subprocess
 import sys
@@ -158,12 +159,15 @@ app.add_middleware(
     CSRFMiddleware,
     secret=settings.DASHBOARD_SECRET or "fallback-csrf-key",
     exempt_urls=[
-        r"^/auth/robinhood/callback",
-        r"^/api/robinhood/",
-        r"^/api/export",
-        r"^/api/import",
+        re.compile(r"^/auth/robinhood/callback"),
+        re.compile(r"^/api/robinhood/"),
+        re.compile(r"^/api/export"),
+        re.compile(r"^/api/import"),
     ],
 )
+
+
+_SESSION_COOKIE = "trader_session"
 
 
 @app.middleware("http")
@@ -178,6 +182,12 @@ async def basic_auth_middleware(request: Request, call_next):
             ),
             status_code=503,
         )
+    # Accept valid session cookie set after first successful Basic Auth
+    cookie_val = request.cookies.get(_SESSION_COOKIE, "")
+    if cookie_val and secrets.compare_digest(cookie_val, settings.DASHBOARD_SECRET):
+        return await call_next(request)
+
+    # Fall back to Basic Auth header
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Basic "):
         try:
@@ -185,7 +195,15 @@ async def basic_auth_middleware(request: Request, call_next):
                 base64.b64decode(auth[6:]).decode().split(":", 1)
             )
             if secrets.compare_digest(password, settings.DASHBOARD_SECRET):
-                return await call_next(request)
+                response = await call_next(request)
+                response.set_cookie(
+                    _SESSION_COOKIE,
+                    settings.DASHBOARD_SECRET,
+                    httponly=True,
+                    samesite="strict",
+                    max_age=86400,  # 24 hours
+                )
+                return response
         except Exception:
             pass
     return Response(
