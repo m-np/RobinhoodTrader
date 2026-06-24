@@ -18,6 +18,7 @@ from starlette_csrf import CSRFMiddleware
 
 from api.limiter import limiter
 from api.routes import router
+from api.transfer import transfer_router
 from config import settings
 
 logging.basicConfig(
@@ -169,7 +170,10 @@ async def basic_auth_middleware(request: Request, call_next):
         return await call_next(request)
     if not settings.DASHBOARD_SECRET:
         return Response(
-            content="DASHBOARD_SECRET not configured. Set it in .env and restart.",
+            content=(
+                "DASHBOARD_SECRET not configured. "
+                "Set it in .env and restart."
+            ),
             status_code=503,
         )
     auth = request.headers.get("Authorization", "")
@@ -191,6 +195,7 @@ async def basic_auth_middleware(request: Request, call_next):
 
 app.mount("/static", StaticFiles(directory="ui/static"), name="static")
 app.include_router(router)
+app.include_router(transfer_router)
 
 
 if __name__ == "__main__":

@@ -346,6 +346,34 @@
   </p>
 </div>
 
+<!-- Data transfer -->
+<div class="settings-card">
+  <div class="settings-card-title">Data transfer</div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Export data</span>
+      <span class="knob-desc">Download all settings, trades, watchlist, and journal as a JSON file</span>
+    </div>
+    <button class="btn" id="export-btn" onclick="exportData()">Download backup</button>
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Import data</span>
+      <span class="knob-desc">Restore from a backup file — existing records are kept, duplicates skipped</span>
+    </div>
+    <div class="notify-input-row">
+      <input type="file" id="import-file" accept=".json" style="display:none" onchange="importData(this)">
+      <button class="btn" onclick="document.getElementById('import-file').click()">Choose file…</button>
+    </div>
+  </div>
+
+  <div id="transfer-status" style="display:none; margin-top:12px; padding:12px 0 0; border-top:1px solid var(--border);">
+    <pre id="transfer-output" style="margin:0; font-size:12px; color:var(--text-2); white-space:pre-wrap;"></pre>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -402,6 +430,66 @@ async function saveNotifyPhone() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ notify_phone: phone }),
   });
+}
+
+function exportData() {
+  const btn = document.getElementById('export-btn');
+  btn.textContent = 'Preparing…';
+  btn.disabled = true;
+  const a = document.createElement('a');
+  a.href = '/api/export';
+  a.click();
+  setTimeout(() => {
+    btn.textContent = 'Download backup';
+    btn.disabled = false;
+  }, 2000);
+}
+
+async function importData(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const statusEl = document.getElementById('transfer-status');
+  const outputEl = document.getElementById('transfer-output');
+  statusEl.style.display = 'block';
+  outputEl.style.color = 'var(--text-2)';
+  outputEl.textContent = 'Uploading…';
+
+  const form = new FormData();
+  form.append('file', file);
+
+  try {
+    const res = await fetch('/api/import', { method: 'POST', body: form });
+    const d = await res.json();
+
+    if (!res.ok) {
+      outputEl.style.color = 'var(--red)';
+      outputEl.textContent = 'Error: ' + (d.detail || res.statusText);
+      return;
+    }
+
+    const lines = ['Import complete:'];
+    const tables = Object.keys(d.imported || {});
+    for (const t of tables) {
+      const n = d.imported[t];
+      const s = d.skipped?.[t] ?? 0;
+      lines.push(`  ${t.padEnd(24)} +${n} new   ${s} skipped`);
+    }
+    if (d.errors?.length) {
+      lines.push('');
+      lines.push('Errors:');
+      d.errors.forEach(e => lines.push('  ' + e));
+      outputEl.style.color = 'var(--amber)';
+    } else {
+      outputEl.style.color = 'var(--green)';
+    }
+    outputEl.textContent = lines.join('\n');
+  } catch (e) {
+    outputEl.style.color = 'var(--red)';
+    outputEl.textContent = 'Request failed: ' + e.message;
+  }
+
+  input.value = '';
 }
 
 async function sendTestNotify(type) {
