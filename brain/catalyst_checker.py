@@ -6,9 +6,16 @@ annually per catalyst_calendar.md.
 """
 from __future__ import annotations
 
+import time as _time
 from datetime import date, datetime, timezone
+from typing import Optional
 
 import yfinance as yf  # type: ignore[import]
+
+# Cache earnings dates for 4 hours to avoid yfinance 429 rate-limits
+# when 22 watchlist tickers are checked every 15-minute agent cycle.
+_earnings_cache: dict[str, tuple[Optional[date], float]] = {}  # ticker → (date|None, expires_ts)
+_CACHE_TTL = 4 * 3600  # 4 hours
 
 _FOMC_2026: list[date] = [
     date(2026, 1, 29),
@@ -60,19 +67,29 @@ def _raw_earnings_list(ticker: str) -> list | None:
 
 
 def _parse_earnings(ticker: str) -> date | None:
-    """Return the next upcoming earnings date, or None."""
+    """Return the next upcoming earnings date, or None (with 4-hour cache)."""
+    sym = ticker.upper()
+    cached_val, expires = _earnings_cache.get(sym, (None, 0.0))
+    if _time.monotonic() < expires:
+        return cached_val
+
     try:
-        raw = _raw_earnings_list(ticker.upper())
+        raw = _raw_earnings_list(sym)
     except Exception:  # noqa: BLE001
+        # Cache None on error to avoid hammering yfinance on 429s
+        _earnings_cache[sym] = (None, _time.monotonic() + _CACHE_TTL)
         return None
     if raw is None:
+        _earnings_cache[sym] = (None, _time.monotonic() + _CACHE_TTL)
         return None
     today = _today()
     candidates = [
         d for item in raw
         if (d := _coerce_to_date(item)) is not None and d >= today
     ]
-    return min(candidates) if candidates else None
+    result = min(candidates) if candidates else None
+    _earnings_cache[sym] = (result, _time.monotonic() + _CACHE_TTL)
+    return result
 
 
 def get_earnings_date(ticker: str) -> date | None:
@@ -167,12 +184,15 @@ def get_earnings_alerts(symbols: list[str]) -> list[dict]:
         List of dicts: {ticker, days_to_earnings, level,
         action_required}.
     """
+    import time
     alerts: list[dict] = []
     for sym in symbols:
         dte = days_to_earnings(sym.upper())
         if dte is None or dte > _WARN_21:
+            time.sleep(0.3)  # avoid Yahoo Finance 429 rate limit on large watchlists
             continue
         alerts.append(_alert_for_days(sym.upper(), dte))
+        time.sleep(0.3)
     return alerts
 
 

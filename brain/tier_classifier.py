@@ -15,7 +15,7 @@ TIER_CONFIG: dict[str, dict] = {
         "max_position_pct": 0.25,
         "stop_loss_pct": 0.08,
         "rsi_range": (30, 60),
-        "min_journal_entries": 3,
+        "min_journal_entries": 1,
         "partial_exit_pct": 0.40,
         "full_exit_pct": 0.60,
         "min_hold_days": 30,
@@ -24,7 +24,7 @@ TIER_CONFIG: dict[str, dict] = {
         "max_position_pct": 0.15,
         "stop_loss_pct": 0.15,
         "rsi_range": (35, 60),
-        "min_journal_entries": 5,
+        "min_journal_entries": 1,
         "partial_exit_pct": 0.50,
         "full_exit_pct": 0.80,
         "min_hold_days": 21,
@@ -33,7 +33,7 @@ TIER_CONFIG: dict[str, dict] = {
         "max_position_pct": 0.05,
         "stop_loss_pct": 0.25,
         "rsi_range": (25, 50),
-        "min_journal_entries": 8,
+        "min_journal_entries": 2,
         "partial_exit_pct": 0.60,
         "full_exit_pct": 1.50,
         "min_hold_days": 0,
@@ -328,7 +328,20 @@ def get_tier_config(tier_name: str) -> dict:
         raise ValueError(
             f"No config for tier {tier_name!r} — classify the ticker first"
         )
-    return TIER_CONFIG[tier_name]
+    cfg = dict(TIER_CONFIG[tier_name])
+    cfg["min_journal_entries"] = get_min_journal_entries(tier_name)
+    return cfg
+
+
+def get_min_journal_entries(tier: str) -> int:
+    """Return minimum journal entries for *tier*, reading from the DB knob.
+
+    Falls back to TIER_CONFIG default so the value is always valid even
+    before the knob is first saved.
+    """
+    from agent.guardrails import get_knob  # late import — avoids circular dep
+    default = TIER_CONFIG.get(tier, {}).get("min_journal_entries", 1)
+    return int(get_knob(f"min_journal_{tier}", default))
 
 
 def check_position_size(

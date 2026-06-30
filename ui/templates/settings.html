@@ -199,6 +199,42 @@
   </div>
 </div>
 
+<!-- Journal depth -->
+<div class="settings-card">
+  <div class="settings-card-title">Journal depth</div>
+  <p class="settings-card-desc">How many research notes the agent must write about a stock before it can buy it. Raise this to make the agent do more homework first. Lower it to let the agent trade sooner.</p>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Core tier</span>
+      <span class="knob-desc">Structurally dominant companies, proven revenue</span>
+    </div>
+    <input type="number" id="knob-min_journal_core" class="knob-number"
+           min="0" max="10" value="1"
+           onchange="saveKnob('min_journal_core', parseInt(this.value) || 0)">
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Growth tier</span>
+      <span class="knob-desc">Real business with meaningful execution risk</span>
+    </div>
+    <input type="number" id="knob-min_journal_growth" class="knob-number"
+           min="0" max="10" value="1"
+           onchange="saveKnob('min_journal_growth', parseInt(this.value) || 0)">
+  </div>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Moonshot tier</span>
+      <span class="knob-desc">Binary bets — thin fundamentals, asymmetric upside</span>
+    </div>
+    <input type="number" id="knob-min_journal_moonshot" class="knob-number"
+           min="0" max="10" value="2"
+           onchange="saveKnob('min_journal_moonshot', parseInt(this.value) || 0)">
+  </div>
+</div>
+
 <!-- Mirror trading -->
 <div class="settings-card">
   <div class="settings-card-title">Mirror trading</div>

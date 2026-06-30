@@ -159,10 +159,10 @@ app.add_middleware(
     CSRFMiddleware,
     secret=settings.DASHBOARD_SECRET or "fallback-csrf-key",
     exempt_urls=[
+        # All API routes: session cookie is samesite=strict + httponly,
+        # so cross-site forgery is already blocked at the cookie layer.
+        re.compile(r"^/api/"),
         re.compile(r"^/auth/robinhood/callback"),
-        re.compile(r"^/api/robinhood/"),
-        re.compile(r"^/api/export"),
-        re.compile(r"^/api/import"),
     ],
 )
 

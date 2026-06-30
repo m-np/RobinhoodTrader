@@ -103,7 +103,7 @@ Position rules:
 - Maximum single position: 5% of portfolio
 - Maximum total Moon Shot allocation: 15% across all Moon Shot positions
 - Stop loss: 25% from entry — wide because these are volatile and earnings-free
-- Minimum journal entries before first trade: 8 (more research precisely because
+- Minimum journal entries before first trade: 2 (more research precisely because
   fundamentals are thinnest)
 - Partial exit at +60%, additional exit at +100%, let remaining 40% ride
 - If down 40%+: exit fully unless a specific named catalyst is imminent

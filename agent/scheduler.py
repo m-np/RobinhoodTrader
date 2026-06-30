@@ -175,11 +175,41 @@ def _process_approved_trades():
 
             elif trade.status == "approved":
                 try:
+                    qty = trade.quantity
+                    dollar_amount: float | None = None
+                    is_fractional = (qty % 1) != 0 or qty < 1
+                    if is_fractional:
+                        tradability = mcp.check_tradability(trade.ticker)
+                        if tradability["fractional_supported"] or (
+                            tradability["closing_only"] and trade.action == "sell"
+                        ):
+                            dollar_amount = trade.total_usd
+                        else:
+                            whole = int(qty)
+                            if whole == 0:
+                                logger.warning(
+                                    "Approved trade %s: %s no fractional support, "
+                                    "< 1 share — rejecting",
+                                    trade.id, trade.ticker,
+                                )
+                                db = SessionLocal()
+                                try:
+                                    t = db.query(Trade).filter(
+                                        Trade.id == trade.id
+                                    ).first()
+                                    if t and t.status == "approved":
+                                        t.status = "rejected"
+                                        db.commit()
+                                finally:
+                                    db.close()
+                                continue
+                            qty = float(whole)
                     mcp.place_order(
                         trade.ticker,
                         trade.action,
-                        trade.quantity,
+                        qty,
                         trade.asset_class or "stock",
+                        dollar_amount=dollar_amount,
                     )
                     db = SessionLocal()
                     try:
@@ -190,9 +220,10 @@ def _process_approved_trades():
                             t.status = "executed"
                             t.executed_at = datetime.utcnow()
                             db.commit()
+                        size_label = f"${dollar_amount:.2f}" if dollar_amount else f"x{qty:.4f}"
                         logger.info(
-                            "Approved trade executed: %s %s x%.4f",
-                            trade.action, trade.ticker, trade.quantity,
+                            "Approved trade executed: %s %s %s",
+                            trade.action, trade.ticker, size_label,
                         )
                     finally:
                         db.close()

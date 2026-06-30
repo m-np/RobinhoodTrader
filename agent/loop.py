@@ -7,7 +7,6 @@ import anthropic
 
 from agent.guardrails import ApprovalPending, GuardrailViolation, check_all
 from agent.mcp_client import McpConnectionError, RobinhoodMCPClient
-from agent.token_manager import McpAuthError, get_token_manager
 from agent.wallet import check_wallet
 from brain import build_system_prompt
 from config import settings
@@ -34,22 +33,6 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
     portfolio = context["portfolio"]
 
     client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-    local_tools = _agent_tools()
-
-    # Build MCP server config if tokens are available
-    tm = get_token_manager()
-    mcp_servers = []
-    if tm.is_connected():
-        try:
-            token = tm.get_access_token()
-            mcp_servers = [{
-                "type": "url",
-                "url": settings.ROBINHOOD_MCP_URL,
-                "name": "robinhood-trading",
-                "authorization_token": token,
-            }]
-        except McpAuthError as e:
-            logger.warning("Could not get MCP token for agent loop: %s", e)
 
     messages = [
         {
@@ -66,21 +49,14 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
         model="claude-sonnet-4-6",
         max_tokens=4096,
         system=build_system_prompt(context["knobs"]),
-        tools=local_tools,
+        tools=_agent_tools(),
         messages=messages,
     )
-    if mcp_servers:
-        create_kwargs["mcp_servers"] = mcp_servers
 
-    logger.info("Starting Claude agent cycle (MCP: %s)", "enabled" if mcp_servers else "disabled")
+    logger.info("Starting Claude agent cycle")
 
     while True:
-        if mcp_servers:
-            response = client.beta.messages.create(
-                **create_kwargs, betas=["mcp-client-2025-04-04"]
-            )
-        else:
-            response = client.messages.create(**create_kwargs)
+        response = client.messages.create(**create_kwargs)
 
         messages.append({"role": "assistant", "content": response.content})
         create_kwargs["messages"] = messages
@@ -136,6 +112,10 @@ def _build_context(mcp_client: RobinhoodMCPClient) -> dict:
     portfolio = mcp_client.get_portfolio()
     portfolio = _enrich_today_pnl(portfolio)
 
+    # Pre-fetch watchlist quotes in one batch so Claude doesn't need to call
+    # get_quote 22 times individually — cuts cycle time from ~90s to ~15s
+    watchlist_quotes = mcp_client.get_quotes_batch(watchlist) if watchlist else {}
+
     # Brain signals — market conditions, earnings alerts, thesis scores
     market = _brain_market_snapshot()
     earnings_alerts: list = []
@@ -159,6 +139,7 @@ def _build_context(mcp_client: RobinhoodMCPClient) -> dict:
     return {
         "portfolio": portfolio,
         "watchlist": watchlist,
+        "watchlist_quotes": watchlist_quotes,
         "blocklist": blocklist,
         "knobs": knobs,
         "recent_alerts": recent_alerts,
@@ -268,8 +249,6 @@ def _handle_tool_call(
     portfolio: dict,
     notifier,
 ) -> dict:
-    if name == "get_quote":
-        return mcp_client.get_quote(inputs["ticker"])
     if name == "get_portfolio":
         return mcp_client.get_portfolio()
     if name == "create_alert":
@@ -376,8 +355,65 @@ def _place_order(
             db.close()
         return {"success": False, "reason": brain_reason}
 
+    # Fractional share routing: check tradability, then decide how to call the API
+    is_fractional_qty = (quantity % 1) != 0 or quantity < 1
+    dollar_amount: float | None = None
+
+    if is_fractional_qty:
+        tradability = mcp_client.check_tradability(ticker)
+        if tradability["fractional_supported"]:
+            # Use dollar_amount (notional) — Robinhood agentic API prefers this
+            # over a fractional quantity field for fractional-enabled symbols
+            dollar_amount = total_usd
+            logger.info(
+                "%s supports fractional trading — placing $%.2f notional order",
+                ticker, dollar_amount,
+            )
+        elif tradability["closing_only"] and action == "sell":
+            # Can still close a fractional position even without full support
+            dollar_amount = total_usd
+            logger.info(
+                "%s fractional closing-only — placing $%.2f notional sell",
+                ticker, dollar_amount,
+            )
+        else:
+            # No fractional support: floor to whole shares
+            whole = int(quantity)
+            if whole == 0:
+                logger.warning(
+                    "Fractional trading not supported for %s and $%.2f buys < 1 share "
+                    "(raw=%s) — order rejected",
+                    ticker, total_usd, tradability["raw"],
+                )
+                db = SessionLocal()
+                try:
+                    t = db.query(Trade).filter(Trade.id == trade_id).first()
+                    if t and t.status not in ("executed", "cancelled"):
+                        t.status = "rejected"
+                        db.commit()
+                finally:
+                    db.close()
+                return {
+                    "success": False,
+                    "reason": (
+                        f"{ticker} does not support fractional shares "
+                        f"(tradability={tradability['raw']}) and ${total_usd:.2f} "
+                        "is less than the cost of one whole share"
+                    ),
+                }
+            # Enough for whole shares — adjust quantity and recalculate total
+            logger.info(
+                "%s: no fractional support, rounding %.4f → %d shares",
+                ticker, quantity, whole,
+            )
+            quantity = float(whole)
+            total_usd = price * quantity
+
     try:
-        result = mcp_client.place_order(ticker, action, quantity, asset_class)
+        result = mcp_client.place_order(
+            ticker, action, quantity, asset_class,
+            dollar_amount=dollar_amount,
+        )
         db = SessionLocal()
         try:
             t = db.query(Trade).filter(Trade.id == trade_id).first()
@@ -387,7 +423,8 @@ def _place_order(
                 db.commit()
         finally:
             db.close()
-        logger.info("Order placed: %s %s x%.4f @ $%.2f", action, ticker, quantity, price)
+        size_label = f"${dollar_amount:.2f}" if dollar_amount else f"x{quantity:.4f}"
+        logger.info("Order placed: %s %s %s @ $%.2f", action, ticker, size_label, price)
         return {"success": True, "trade_id": trade_id, "result": result}
     except (McpConnectionError, Exception) as e:
         logger.error("Order failed for %s %s: %s", action, ticker, e)
@@ -405,25 +442,22 @@ def _place_order(
 def _agent_tools() -> list:
     return [
         {
-            "name": "get_quote",
-            "description": "Get current price and daily change for a ticker",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "ticker": {"type": "string", "description": "Stock ticker symbol"},
-                },
-                "required": ["ticker"],
-            },
-        },
-        {
             "name": "get_portfolio",
-            "description": "Get current portfolio holdings, cash, and total value",
+            "description": (
+                "Get real-time portfolio holdings, cash, and total value. "
+                "Current prices for watchlist tickers are already in the context "
+                "under 'watchlist_quotes' — only call this if you need the very "
+                "latest portfolio state after a trade."
+            ),
             "input_schema": {"type": "object", "properties": {}},
         },
         {
             "name": "place_order",
             "description": (
                 "Place a buy or sell order. Guardrails are enforced before execution. "
+                "Fractional shares are supported automatically: pass any quantity including "
+                "decimals (e.g. 0.1 shares) or small dollar amounts — the system checks "
+                "whether the symbol supports fractional trading and routes accordingly. "
                 "Always use this tool for trades — never use Robinhood MCP place_order directly."
             ),
             "input_schema": {
@@ -459,14 +493,21 @@ def _agent_tools() -> list:
         },
         {
             "name": "create_alert",
-            "description": "Create an alert visible on the dashboard",
+            "description": (
+                "Create an informational alert visible on the dashboard. "
+                "Use for market observations, wallet warnings, or mirror signals. "
+                "Do NOT use alert_type='approval_request' — when place_order returns "
+                "{pending: true}, the approval alert and trade record are created "
+                "automatically by the guardrails system with the correct trade link. "
+                "Creating a second approval_request alert here will break the Approve button."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "ticker": {"type": "string"},
                     "alert_type": {
                         "type": "string",
-                        "enum": ["market_wave", "mirror_trade", "approval_request", "wallet_low"],
+                        "enum": ["market_wave", "mirror_trade", "wallet_low"],
                     },
                     "message": {"type": "string"},
                     "severity": {"type": "string", "enum": ["info", "warning", "critical"]},

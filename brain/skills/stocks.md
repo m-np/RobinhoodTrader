@@ -23,7 +23,7 @@ Do not evaluate signals until all gates pass.
 
 - [ ] Ticker has a journal hypothesis entry with all five hypothesis questions answered
 - [ ] Journal latest sentiment is NOT broken and NOT challenged
-- [ ] Minimum journal entries for tier: Core 3, Growth 5, Moon Shot 8
+- [ ] Minimum journal entries for tier: Core 1, Growth 1, Moon Shot 2
 - [ ] No earnings announcement within 7 calendar days (catalyst_calendar.md)
 - [ ] No binary event (FDA, regulatory ruling, major launch) within 14 days
 - [ ] Sector cap check: new position does not breach sector limit (aggressive_growth.md)

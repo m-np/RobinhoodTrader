@@ -230,11 +230,16 @@ async function loadAlerts() {
         // Reason from first parenthetical in message
         context = (a.message.match(/\(([^)]+)\)/) || [])[1] || 'agent recommendation';
 
-        primaryBtn = `<button class="decision-btn decision-btn-${action}"
-                        onclick="approveTrade('${a.trade_id}','${a.id}')">
-                        ${action === 'sell' ? 'Approve sell' : 'Approve buy'}
-                      </button>`;
-        secondaryBtn = `<button class="btn-sm" onclick="rejectTrade('${a.trade_id}','${a.id}')">Reject</button>`;
+        if (a.trade_id) {
+          primaryBtn = `<button class="decision-btn decision-btn-${action}"
+                          onclick="approveTrade('${a.trade_id}','${a.id}')">
+                          ${action === 'sell' ? 'Approve sell' : 'Approve buy'}
+                        </button>`;
+          secondaryBtn = `<button class="btn-sm" onclick="rejectTrade('${a.trade_id}','${a.id}')">Reject</button>`;
+        } else {
+          primaryBtn = '';
+          secondaryBtn = `<button class="btn-sm" onclick="ackAlert('${a.id}')">Dismiss</button>`;
+        }
 
       } else {
         // mirror_trade
@@ -625,6 +630,7 @@ async function loadKnobs() {
       if (!el) return;
       if (el.type === 'checkbox') el.checked = value === true || value === 'true';
       if (el.type === 'range') el.value = value;
+      if (el.type === 'number') el.value = value;
     });
     syncRangeDisplay('approval_threshold_usd', 'thresh-display', v => parseInt(v) === 0 ? 'Always ask' : '$'+parseInt(v).toLocaleString());
     syncRangeDisplay('max_position_pct', 'pos-display', v => v+'%');

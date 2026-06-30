@@ -4,7 +4,14 @@ red_day_protocol.md and fetches live market conditions via yfinance.
 """
 from __future__ import annotations
 
+import time as _time
+
 import yfinance as yf  # type: ignore[import]
+
+# Cache market snapshot for 30 minutes to avoid yfinance 429 rate-limits
+_snapshot_cache: dict = {}
+_snapshot_expires: float = 0.0
+_SNAPSHOT_TTL = 30 * 60  # 30 minutes
 
 _LEVEL_META: dict[int, dict] = {
     0: {
@@ -149,7 +156,7 @@ def verify_macro_cause(
 
 
 def get_market_snapshot() -> dict:
-    """Fetch current market conditions using yfinance.
+    """Fetch current market conditions using yfinance (cached 30 min).
 
     Uses SPY for S&P 500, ^VIX for volatility index, SOXX for semis,
     XLK for broad tech. Falls back gracefully on network errors.
@@ -162,6 +169,10 @@ def get_market_snapshot() -> dict:
             xlk_change_pct    (float | None): XLK day change.
             sp500_above_50ma  (bool): SPY above its 50-day MA.
     """
+    global _snapshot_cache, _snapshot_expires
+    if _snapshot_cache and _time.monotonic() < _snapshot_expires:
+        return dict(_snapshot_cache)
+
     snapshot: dict = {
         "sp500_change_pct": 0.0,
         "vix": 15.0,
@@ -210,6 +221,8 @@ def get_market_snapshot() -> dict:
     except Exception:
         pass
 
+    _snapshot_cache = dict(snapshot)
+    _snapshot_expires = _time.monotonic() + _SNAPSHOT_TTL
     return snapshot
 
 

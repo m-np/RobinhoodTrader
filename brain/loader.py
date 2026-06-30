@@ -57,11 +57,26 @@ def active_skill_names(knobs: dict) -> list[str]:
     return names
 
 
+def _inject_journal_depth(content: str, knobs: dict) -> str:
+    """Replace the journal-depth line in stocks.md with live knob values."""
+    import re
+    core = int(knobs.get("min_journal_core", 1))
+    growth = int(knobs.get("min_journal_growth", 1))
+    moonshot = int(knobs.get("min_journal_moonshot", 2))
+    return re.sub(
+        r"Minimum journal entries for tier: Core \d+, Growth \d+, Moon Shot \d+",
+        f"Minimum journal entries for tier: Core {core}, Growth {growth}, Moon Shot {moonshot}",
+        content,
+    )
+
+
 def build_system_prompt(knobs: dict) -> str:
     """Assemble full system prompt from strategy skills + active asset skills."""
     parts: list[str] = []
     for name in active_skill_names(knobs):
         content = load_skill(name)
+        if name == "stocks":
+            content = _inject_journal_depth(content, knobs)
         if content:
             parts.append(content)
         else:

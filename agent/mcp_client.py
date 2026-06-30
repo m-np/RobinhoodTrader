@@ -148,7 +148,21 @@ class RobinhoodMCPClient:
                     f"MCP {err.get('code','?')}: {err.get('message', str(err))}"
                 )
 
-            return _unwrap(data.get("result", {}))
+            raw_result = data.get("result", {})
+            # MCP tools signal application errors via isError=true instead of
+            # JSON-RPC "error" — HTTP stays 200, so we must check explicitly.
+            if raw_result.get("isError"):
+                err_text = next(
+                    (
+                        item["text"]
+                        for item in raw_result.get("content", [])
+                        if item.get("type") == "text"
+                    ),
+                    "MCP tool returned isError=true",
+                )
+                raise McpConnectionError(f"MCP tool error: {err_text[:400]}")
+
+            return _unwrap(raw_result)
 
         except McpConnectionError:
             raise
@@ -343,6 +357,34 @@ class RobinhoodMCPClient:
         except McpConnectionError:
             return {"ticker": ticker, "price": None, "change_pct": None}
 
+    def check_tradability(self, ticker: str) -> dict:
+        """Check whether a ticker supports fractional share trading.
+
+        Calls get_equity_tradability on the Robinhood MCP.  Returns a dict with:
+          fractional_supported  bool   — True when new fractional buys are allowed
+          closing_only          bool   — True when only closing fractional sells work
+          raw                   str    — raw fractional_tradability value from API
+        """
+        try:
+            acct = self._get_agentic_account()
+            result = self._call("get_equity_tradability", {
+                "account_number": acct,
+                "symbols": [ticker.upper()],
+            })
+            items = result.get("data", {}).get("results", [])
+            for item in items:
+                if item.get("symbol", "").upper() == ticker.upper():
+                    ft = item.get("fractional_tradability", "not_tradable")
+                    return {
+                        "fractional_supported": ft == "tradable",
+                        "closing_only": ft == "position_closing_only",
+                        "raw": ft,
+                    }
+            return {"fractional_supported": False, "closing_only": False, "raw": "not_found"}
+        except McpConnectionError as e:
+            logger.warning("Tradability check failed for %s: %s", ticker, e)
+            return {"fractional_supported": False, "closing_only": False, "raw": "unknown"}
+
     def place_order(
         self,
         ticker: str,
@@ -350,23 +392,36 @@ class RobinhoodMCPClient:
         quantity: float,
         asset_class: str = "stock",
         order_type: str = "market",
+        dollar_amount: float | None = None,
     ) -> dict:
+        """Place an equity order.
+
+        For fractional shares pass dollar_amount (notional) instead of quantity.
+        Robinhood's agentic API accepts dollar_amount for fractional-enabled symbols.
+        """
         acct = self._get_agentic_account()
-        result = self._call("place_equity_order", {
+        args: dict = {
             "account_number": acct,
             "symbol": ticker.upper(),
             "side": action,
             "type": order_type,
-            "quantity": quantity,
             "time_in_force": "gfd",
-        })
+        }
+        if dollar_amount is not None:
+            args["dollar_amount"] = str(round(dollar_amount, 2))
+            label = f"${dollar_amount:.2f} notional"
+        else:
+            args["quantity"] = quantity
+            label = f"x{quantity:.4f}"
+
+        result = self._call("place_equity_order", args)
         order_id = (
             result.get("data", {}).get("order", {}).get("id")
             or result.get("data", {}).get("id")
         )
         logger.info(
-            "Order submitted: %s %s x%.4f — RH order_id=%s",
-            action, ticker.upper(), quantity, order_id or "unknown",
+            "Order submitted: %s %s %s — RH order_id=%s",
+            action, ticker.upper(), label, order_id or "unknown",
         )
         return result
 
