@@ -23,12 +23,12 @@
 
 <!-- Asset classes -->
 <div class="settings-card">
-  <div class="settings-card-title">Asset classes</div>
+  <div class="settings-card-title">What can the agent trade?</div>
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Stocks / equities</span>
-      <span class="knob-desc">US listed equities, ETFs</span>
+      <span class="knob-name">Stocks</span>
+      <span class="knob-desc">US-listed stocks and ETFs</span>
     </div>
     <label class="toggle">
       <input type="checkbox" id="knob-asset_stocks" onchange="saveKnob('asset_stocks', this.checked)">
@@ -50,7 +50,7 @@
   <div class="knob-row">
     <div class="knob-label">
       <span class="knob-name">Options</span>
-      <span class="knob-desc">Calls and puts on equities</span>
+      <span class="knob-desc">Contracts to buy or sell a stock at a fixed price</span>
     </div>
     <label class="toggle">
       <input type="checkbox" id="knob-asset_options" onchange="saveKnob('asset_options', this.checked)">
@@ -61,7 +61,7 @@
   <div class="knob-row">
     <div class="knob-label">
       <span class="knob-name">Futures</span>
-      <span class="knob-desc">Commodity and index futures contracts</span>
+      <span class="knob-desc">Agreements to buy or sell a commodity or index at a future date</span>
     </div>
     <label class="toggle">
       <input type="checkbox" id="knob-asset_futures" onchange="saveKnob('asset_futures', this.checked)">
@@ -72,7 +72,7 @@
   <div class="knob-row">
     <div class="knob-label">
       <span class="knob-name">Event contracts</span>
-      <span class="knob-desc">Prediction market contracts</span>
+      <span class="knob-desc">Bets on real-world outcomes, like elections or economic data</span>
     </div>
     <label class="toggle">
       <input type="checkbox" id="knob-asset_events" onchange="saveKnob('asset_events', this.checked)">
@@ -83,12 +83,12 @@
 
 <!-- Approval gates -->
 <div class="settings-card">
-  <div class="settings-card-title">Human approval gates</div>
+  <div class="settings-card-title">Ask me before trading</div>
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Approval threshold</span>
-      <span class="knob-desc">Trades above this always notify you</span>
+      <span class="knob-name">Trade size threshold</span>
+      <span class="knob-desc">Always ask for approval on trades above this amount</span>
     </div>
     <div class="knob-right">
       <span id="thresh-display">$500</span>
@@ -100,8 +100,8 @@
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">New position opens</span>
-      <span class="knob-desc">Agent buys a stock not already held</span>
+      <span class="knob-name">Buying a new stock</span>
+      <span class="knob-desc">Ask before opening a position in a stock you don't already own</span>
     </div>
     <label class="toggle">
       <input type="checkbox" id="knob-gate_new_positions" onchange="saveKnob('gate_new_positions', this.checked)">
@@ -111,8 +111,8 @@
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Full position exits</span>
-      <span class="knob-desc">Agent sells an entire holding</span>
+      <span class="knob-name">Selling everything in a stock</span>
+      <span class="knob-desc">Ask before the agent sells all shares of a holding</span>
     </div>
     <label class="toggle">
       <input type="checkbox" id="knob-gate_full_exits" onchange="saveKnob('gate_full_exits', this.checked)">
@@ -122,8 +122,8 @@
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Rebalance trades</span>
-      <span class="knob-desc">Routine portfolio weight adjustments</span>
+      <span class="knob-name">Rebalancing positions</span>
+      <span class="knob-desc">Ask before the agent trims or adds to an existing holding</span>
     </div>
     <label class="toggle">
       <input type="checkbox" id="knob-gate_rebalance" onchange="saveKnob('gate_rebalance', this.checked)">
@@ -133,8 +133,8 @@
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Stop-loss triggers</span>
-      <span class="knob-desc">Automatic sells to limit downside</span>
+      <span class="knob-name">Cutting a loss</span>
+      <span class="knob-desc">Ask before the agent sells a stock that has dropped below your stop-loss</span>
     </div>
     <label class="toggle">
       <input type="checkbox" id="knob-gate_stop_loss" onchange="saveKnob('gate_stop_loss', this.checked)">
@@ -144,8 +144,8 @@
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Approval timeout</span>
-      <span class="knob-desc">Cancel order if no response within</span>
+      <span class="knob-name">Cancel approval after</span>
+      <span class="knob-desc">If you don't respond in time, the trade is automatically cancelled</span>
     </div>
     <div class="seg-control" id="seg-timeout">
       <button class="seg-btn" data-value="5" onclick="setSeg('approval_timeout_minutes', 5, this)">5 min</button>
@@ -155,14 +155,14 @@
   </div>
 </div>
 
-<!-- Guardrail limits -->
+<!-- Risk limits -->
 <div class="settings-card">
-  <div class="settings-card-title">Guardrail limits</div>
+  <div class="settings-card-title">Risk limits</div>
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Max position size</span>
-      <span class="knob-desc">Max % of portfolio in one stock</span>
+      <span class="knob-name">Most the agent can put in one stock</span>
+      <span class="knob-desc">Prevents the agent from going all-in on a single position</span>
     </div>
     <div class="knob-right">
       <span id="pos-display">20%</span>
@@ -175,7 +175,7 @@
   <div class="knob-row">
     <div class="knob-label">
       <span class="knob-name">Max trades per day</span>
-      <span class="knob-desc">Hard cap on daily order count</span>
+      <span class="knob-desc">The agent stops placing new orders once this limit is hit</span>
     </div>
     <div class="knob-right">
       <span id="trades-display">5</span>
@@ -187,8 +187,8 @@
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Daily loss halt</span>
-      <span class="knob-desc">Pause trading if down more than X% today</span>
+      <span class="knob-name">Stop trading if portfolio drops by</span>
+      <span class="knob-desc">The agent pauses all activity for the rest of the day if this threshold is hit</span>
     </div>
     <div class="knob-right">
       <span id="loss-display">3.0%</span>
@@ -238,11 +238,12 @@
 <!-- Mirror trading -->
 <div class="settings-card">
   <div class="settings-card-title">Mirror trading</div>
+  <p class="settings-card-desc">Mirror trading copies trades made by politicians and corporate insiders shortly after they're publicly disclosed.</p>
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Auto-execute mirror trades</span>
-      <span class="knob-desc">Queue mirror disclosures instantly without dashboard approval. Blocklist, daily-loss halt, trade cap, and position-size guardrails still apply.</span>
+      <span class="knob-name">Auto-copy disclosed trades</span>
+      <span class="knob-desc">Copy a trade the moment it's disclosed, without asking you first. Your other safety limits (blocklist, daily-loss halt, trade cap, position size) still apply.</span>
     </div>
     <label class="toggle">
       <input type="checkbox" id="knob-mirror_auto_execute" onchange="saveKnob('mirror_auto_execute', this.checked)">
@@ -254,11 +255,12 @@
 <!-- Reports -->
 <div class="settings-card">
   <div class="settings-card-title">Summary reports</div>
+  <p class="settings-card-desc">A written recap of trades, performance, and reasoning, sent on a schedule you choose.</p>
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Frequency</span>
-      <span class="knob-desc">Triggers at 4 PM ET after market close</span>
+      <span class="knob-name">How often</span>
+      <span class="knob-desc">Sent at 4 PM ET, after the market closes</span>
     </div>
     <div class="seg-control" id="seg-freq">
       <button class="seg-btn" data-value="daily" onclick="setSeg('report_frequency','daily',this)">Daily</button>
@@ -270,8 +272,8 @@
 
   <div class="knob-row" id="weekly-day-row">
     <div class="knob-label">
-      <span class="knob-name">Weekly day</span>
-      <span class="knob-desc">After market close on this day</span>
+      <span class="knob-name">Which day for the weekly report</span>
+      <span class="knob-desc">Sent after market close on this day</span>
     </div>
     <div class="seg-control" id="seg-day">
       <button class="seg-btn" data-value="Monday" onclick="setSeg('report_weekly_day','Monday',this)">Mon</button>
@@ -284,8 +286,8 @@
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Delivery</span>
-      <span class="knob-desc">Where the summary gets sent</span>
+      <span class="knob-name">Where it's sent</span>
+      <span class="knob-desc">Choose email, SMS, or both</span>
     </div>
     <div class="seg-control" id="seg-delivery">
       <button class="seg-btn active" data-value="email" onclick="setSeg('report_delivery','email',this)">Email</button>
@@ -296,8 +298,8 @@
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Depth</span>
-      <span class="knob-desc">How much detail Claude writes</span>
+      <span class="knob-name">How detailed</span>
+      <span class="knob-desc">Brief is a few sentences; deep analysis covers every position in depth</span>
     </div>
     <div class="seg-control" id="seg-depth">
       <button class="seg-btn active" data-value="brief" onclick="setSeg('report_depth','brief',this)">Brief</button>
@@ -308,8 +310,8 @@
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Include trade rationale</span>
-      <span class="knob-desc">Claude explains each decision</span>
+      <span class="knob-name">Explain each trade</span>
+      <span class="knob-desc">Include the reasoning behind every buy and sell</span>
     </div>
     <label class="toggle">
       <input type="checkbox" id="knob-report_include_rationale" onchange="saveKnob('report_include_rationale', this.checked)">
@@ -319,8 +321,8 @@
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Include P&amp;L breakdown</span>
-      <span class="knob-desc">Per-position and overall figures</span>
+      <span class="knob-name">Include profit and loss</span>
+      <span class="knob-desc">Show gains and losses for each position and the overall portfolio</span>
     </div>
     <label class="toggle">
       <input type="checkbox" id="knob-report_include_pnl" onchange="saveKnob('report_include_pnl', this.checked)">
@@ -331,7 +333,7 @@
 
 <!-- Notifications -->
 <div class="settings-card">
-  <div class="settings-card-title">Notification delivery</div>
+  <div class="settings-card-title">Where you get notified</div>
 
   <!-- Email row -->
   <div class="knob-row">
@@ -344,8 +346,8 @@
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Send reports to</span>
-      <span class="knob-desc">Delivery address for email summaries</span>
+      <span class="knob-name">Send reports to this email</span>
+      <span class="knob-desc">Where summary reports are sent</span>
     </div>
     <div class="notify-input-row">
       <input type="email" id="notify-email-input" class="notify-text-input" placeholder="you@example.com">
@@ -365,8 +367,8 @@
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Send alerts to</span>
-      <span class="knob-desc">Mobile number for approval alerts and trade summaries</span>
+      <span class="knob-name">Send alerts to this number</span>
+      <span class="knob-desc">Where trade approval requests and summaries are texted</span>
     </div>
     <div class="notify-input-row">
       <input type="tel" id="notify-phone-input" class="notify-text-input" placeholder="+1 555 123 4567">
@@ -376,28 +378,28 @@
   </div>
 
   <p class="notify-hint">
-    SMTP credentials (host, port, user, password) and Twilio API keys (account SID, auth token, from number)
-    are configured via <code>.env</code>. The email address and phone number above are saved to the database
-    and can be changed here any time without a restart.
+    Email and SMS need to be set up once in your server's <code>.env</code> file before they'll work
+    (this is a one-time technical step, not something you do here). The email address and phone number
+    above are just where messages get sent — you can change them any time without restarting anything.
   </p>
 </div>
 
 <!-- Data transfer -->
 <div class="settings-card">
-  <div class="settings-card-title">Data transfer</div>
+  <div class="settings-card-title">Backup and restore</div>
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Export data</span>
-      <span class="knob-desc">Download all settings, trades, watchlist, and journal as a JSON file</span>
+      <span class="knob-name">Download a backup</span>
+      <span class="knob-desc">Saves all your settings, trades, watchlist, and journal to a file on your computer</span>
     </div>
     <button class="btn" id="export-btn" onclick="exportData()">Download backup</button>
   </div>
 
   <div class="knob-row">
     <div class="knob-label">
-      <span class="knob-name">Import data</span>
-      <span class="knob-desc">Restore from a backup file — existing records are kept, duplicates skipped</span>
+      <span class="knob-name">Restore from a backup</span>
+      <span class="knob-desc">Loads data from a backup file. Nothing is deleted — only missing records are added</span>
     </div>
     <div class="notify-input-row">
       <form id="import-form" method="POST" action="/api/import"
