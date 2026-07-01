@@ -1,3 +1,4 @@
+import base64
 import os
 from unittest.mock import patch
 
@@ -12,6 +13,9 @@ os.environ.setdefault("DEPLOYMENT_MODE", "local")
 # Keep the real ENCRYPTION_KEY so token decryption works;
 # fall back to a generated key only in clean CI environments.
 os.environ.setdefault("ENCRYPTION_KEY", Fernet.generate_key().decode())
+# Fixed test secret so Basic Auth middleware allows TestClient requests.
+_TEST_SECRET = "test-dashboard-secret"
+os.environ["DASHBOARD_SECRET"] = _TEST_SECRET
 
 
 @pytest.fixture(scope="session")
@@ -19,7 +23,8 @@ def client():
     with patch("agent.scheduler.start_scheduler"), \
          patch("agent.scheduler.stop_scheduler"):
         from main import app
-        with TestClient(app) as c:
+        _auth = base64.b64encode(f":{_TEST_SECRET}".encode()).decode()
+        with TestClient(app, headers={"Authorization": f"Basic {_auth}"}) as c:
             yield c
 
 

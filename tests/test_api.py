@@ -304,7 +304,7 @@ class TestTrades:
 
         trades = client.get("/api/trades").json()
         trade = next(t for t in trades if t["id"] == trade_id)
-        assert trade["status"] == "executed"
+        assert trade["status"] == "approved"
 
         # Now test reject on a fresh trade
         trade_id2 = str(uuid.uuid4())

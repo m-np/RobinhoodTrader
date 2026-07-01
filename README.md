@@ -1,5 +1,9 @@
 # RobinhoodTrader
 
+[![CI](https://github.com/m-np/RobinhoodTrader/actions/workflows/ci.yml/badge.svg)](https://github.com/m-np/RobinhoodTrader/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+
 An AI-powered trading agent that uses [Claude](https://anthropic.com) as its decision-making brain, connected to Robinhood via their official MCP server. Unlike rule-based bots, this agent trades from your **written investment thesis** — it can only act on tickers you've researched, sized by how much evidence you've documented.
 
 > **This is a personal tool.** Your API keys and credentials never leave your machine (or your own cloud deployment). No shared backend, no telemetry, no third-party service beyond the APIs you configure yourself.
