@@ -19,7 +19,7 @@ Out of scope:
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Email **mandar4g@gmail.com** with:
+Email **mandar4tech@gmail.com** with:
 - A description of the vulnerability
 - Steps to reproduce or a proof of concept
 - The potential impact (what an attacker could do)
