@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import uuid
 from datetime import datetime
 
@@ -55,8 +56,9 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
 
     logger.info("Starting Claude agent cycle")
 
-    while True:
-        response = client.messages.create(**create_kwargs)
+    max_iterations = 10
+    for iteration in range(max_iterations):
+        response = _call_claude_with_retry(client, create_kwargs)
 
         messages.append({"role": "assistant", "content": response.content})
         create_kwargs["messages"] = messages
@@ -80,7 +82,29 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
         messages.append({"role": "user", "content": tool_results})
         create_kwargs["messages"] = messages
 
+        if iteration == max_iterations - 1:
+            logger.warning("Agent cycle hit max iterations (%d) — terminating", max_iterations)
+
     logger.info("Agent cycle complete")
+
+
+def _call_claude_with_retry(client: anthropic.Anthropic, kwargs: dict, max_retries: int = 3):
+    """Call Claude with exponential backoff on transient API errors."""
+    for attempt in range(max_retries):
+        try:
+            return client.messages.create(**kwargs)
+        except anthropic.RateLimitError as e:
+            wait = 2 ** attempt * 5  # 5s, 10s, 20s
+            logger.warning("Claude rate limited — retrying in %ds (attempt %d/%d)", wait, attempt + 1, max_retries)
+            time.sleep(wait)
+        except anthropic.APIStatusError as e:
+            if e.status_code >= 500 and attempt < max_retries - 1:
+                wait = 2 ** attempt * 2  # 2s, 4s
+                logger.warning("Claude API error %d — retrying in %ds", e.status_code, wait)
+                time.sleep(wait)
+            else:
+                raise
+    raise RuntimeError("Claude API failed after all retries")
 
 
 def _build_context(mcp_client: RobinhoodMCPClient) -> dict:
@@ -293,6 +317,13 @@ def _place_order(
     price = quote.get("price") or 0.0
     total_usd = price * quantity
 
+    # Brain gates run first — before creating a trade record or hitting guardrails.
+    # This prevents approval-gated trades from bypassing thesis/earnings checks.
+    ok, brain_reason = _brain_gates(ticker, action)
+    if not ok:
+        logger.warning("Brain gate blocked %s %s: %s", action, ticker, brain_reason)
+        return {"success": False, "reason": brain_reason}
+
     db = SessionLocal()
     try:
         trade = Trade(
@@ -340,20 +371,6 @@ def _place_order(
         finally:
             db.close()
         return {"success": False, "reason": str(e)}
-
-    # Brain gates: earnings proximity and thesis sentiment
-    ok, brain_reason = _brain_gates(ticker, action)
-    if not ok:
-        logger.warning("Brain gate blocked %s %s: %s", action, ticker, brain_reason)
-        db = SessionLocal()
-        try:
-            t = db.query(Trade).filter(Trade.id == trade_id).first()
-            if t and t.status not in ("executed", "cancelled"):
-                t.status = "rejected"
-                db.commit()
-        finally:
-            db.close()
-        return {"success": False, "reason": brain_reason}
 
     # Fractional share routing: check tradability, then decide how to call the API
     is_fractional_qty = (quantity % 1) != 0 or quantity < 1
