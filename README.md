@@ -6,6 +6,8 @@ An AI-powered trading agent that uses [Claude](https://anthropic.com) as its dec
 
 > **New here?** Read the [User Guide](docs/USER_GUIDE.md) first — it explains the full experience, day-to-day workflow, and the thesis journal in depth before you touch any config.
 
+![Dashboard](docs/assets/main_page.png)
+
 ---
 
 ## What makes this different
@@ -87,6 +89,25 @@ Claude writes plain-English daily and weekly summaries: P&L, trade rationale, an
 
 **Notifications**
 Configure email and phone number from the dashboard. Test buttons verify both channels before you go live. SMTP and Twilio credentials stay in `.env`; recipient addresses are stored in the database and can be changed without a restart.
+
+---
+
+## Screenshots
+
+<table>
+  <tr>
+    <td><img src="docs/assets/journal.png" alt="Thesis Journal"/><br/><sub><b>Thesis Journal</b> — conviction scores gate what the agent can buy</sub></td>
+    <td><img src="docs/assets/watchlist.png" alt="Watchlist"/><br/><sub><b>Watchlist</b> — live prices, daily change %, and sparklines</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/mirrors.png" alt="Mirrors"/><br/><sub><b>Mirrors</b> — congressional trades and 13F filings</sub></td>
+    <td><img src="docs/assets/reports.png" alt="Reports"/><br/><sub><b>Reports</b> — plain-English daily and weekly summaries</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/settings.png" alt="Settings"/><br/><sub><b>Settings</b> — guardrails, notifications, and Robinhood connection</sub></td>
+    <td></td>
+  </tr>
+</table>
 
 ---
 
