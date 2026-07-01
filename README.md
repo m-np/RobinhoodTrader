@@ -272,7 +272,7 @@ ROBINHOOD_REDIRECT_URI=http://localhost:8000/auth/robinhood/callback
 docker compose up --build
 ```
 
-Postgres starts first, then the app runs migrations and starts automatically:
+Docker starts a bundled Postgres and the app together. You never need to change `DATABASE_URL` in `.env` — the compose file overrides it automatically, so `python main.py` and `docker compose up` both work with the same `.env`.
 
 ```
 app-1  | INFO  Running database migrations...
@@ -283,6 +283,15 @@ app-1  | INFO  Uvicorn running on http://0.0.0.0:8000
 Open **http://localhost:8000** and log in with your `DASHBOARD_SECRET`.
 
 To stop: `docker compose down` (keeps data) or `docker compose down -v` (wipes database).
+
+> **Already have data in a local Postgres?** Run the migration script once — it carries over
+> your watchlist, blocklist, settings, Robinhood tokens, and trade history.
+> Your thesis journal lives in `data/trader.db` (SQLite) and is automatically
+> available in Docker via the volume mount — no migration needed for that.
+> ```bash
+> ./scripts/migrate_to_docker.sh
+> docker compose up app
+> ```
 
 ---
 

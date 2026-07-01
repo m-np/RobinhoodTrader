@@ -19,7 +19,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      # Override DATABASE_URL to point at the compose db service
+      # Overrides DATABASE_URL from .env — you never need to change .env
       DATABASE_URL: postgresql://postgres:postgres@db/robinhoodtrader
       DEPLOYMENT_MODE: local
     ports:
@@ -28,7 +28,7 @@ services:
       db:
         condition: service_healthy
     volumes:
-      # Persist the SQLite journal cache and logs across restarts
+      - ./data:/app/data   # SQLite journal (thesis entries, position history)
       - ./logs:/app/logs
 
 volumes:
