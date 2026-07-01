@@ -15,7 +15,7 @@ cd RobinhoodTrader
 
 conda create -n robinhoodtrader python=3.11 -y
 conda activate robinhoodtrader
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 
 cp .env.example .env
 # fill in DATABASE_URL, ANTHROPIC_API_KEY, ENCRYPTION_KEY, DASHBOARD_SECRET

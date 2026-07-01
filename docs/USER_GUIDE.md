@@ -298,6 +298,31 @@ Yes, if `gate_rebalance` is OFF (the default). Partial trims — where the agent
 
 ## Journal quick reference
 
+**If running with Docker:**
+```bash
+# Add initial hypothesis (required before any buy)
+docker compose exec app python scripts/journal_cli.py add TICKER hypothesis "your thesis" \
+  --sentiment strengthening --tier core|growth|moonshot
+
+# Add after earnings / news
+docker compose exec app python scripts/journal_cli.py add TICKER observation "what happened" \
+  --sentiment strengthening|neutral|challenged
+
+# Update conviction
+docker compose exec app python scripts/journal_cli.py add TICKER update "what changed" \
+  --sentiment strengthening|neutral|challenged|broken
+
+# Hard block a ticker immediately
+docker compose exec app python scripts/journal_cli.py add TICKER update "thesis broken" --sentiment broken
+
+# See all tickers with scores and sentiment
+docker compose exec app python scripts/journal_cli.py status
+
+# See full history for one ticker
+docker compose exec app python scripts/journal_cli.py list TICKER
+```
+
+**If running manually (conda):**
 ```bash
 # Add initial hypothesis (required before any buy)
 python scripts/journal_cli.py add TICKER hypothesis "your thesis" \

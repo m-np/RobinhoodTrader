@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:14-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: robinhoodtrader
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override DATABASE_URL to point at the compose db service
+      DATABASE_URL: postgresql://postgres:postgres@db/robinhoodtrader
+      DEPLOYMENT_MODE: local
+    ports:
+      - "${PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Persist the SQLite journal cache and logs across restarts
+      - ./logs:/app/logs
+
+volumes:
+  pgdata:

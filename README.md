@@ -230,14 +230,65 @@ Hard stops that always apply regardless of gate settings:
 
 ### Prerequisites
 
-- Python 3.11+ (Anaconda / Miniconda recommended)
-- PostgreSQL 14+
 - [Anthropic API key](https://console.anthropic.com)
 - [Robinhood account](https://robinhood.com) with the agentic trading feature enabled
 - (Optional) [Twilio](https://twilio.com) for SMS alerts
 - (Optional) SMTP credentials for email reports
 
-### 1. Clone and install
+---
+
+### Option A — Docker (recommended)
+
+No local Python or Postgres setup required.
+
+#### 1. Clone and configure
+
+```bash
+git clone https://github.com/m-np/RobinhoodTrader.git
+cd RobinhoodTrader
+cp .env.example .env
+```
+
+Generate an encryption key for storing OAuth tokens:
+
+```bash
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Fill in the required fields in `.env`:
+
+```env
+ANTHROPIC_API_KEY=sk-ant-...
+ENCRYPTION_KEY=<key from above>
+DASHBOARD_SECRET=<choose a password for the dashboard>
+ROBINHOOD_CLIENT_ID=
+ROBINHOOD_CLIENT_SECRET=
+ROBINHOOD_REDIRECT_URI=http://localhost:8000/auth/robinhood/callback
+```
+
+#### 2. Start
+
+```bash
+docker compose up --build
+```
+
+Postgres starts first, then the app runs migrations and starts automatically:
+
+```
+app-1  | INFO  Running database migrations...
+app-1  | INFO  Migrations complete
+app-1  | INFO  Uvicorn running on http://0.0.0.0:8000
+```
+
+Open **http://localhost:8000** and log in with your `DASHBOARD_SECRET`.
+
+To stop: `docker compose down` (keeps data) or `docker compose down -v` (wipes database).
+
+---
+
+### Option B — Manual (Conda + local Postgres)
+
+#### 1. Clone and install
 
 ```bash
 git clone https://github.com/m-np/RobinhoodTrader.git
@@ -247,7 +298,7 @@ conda activate robinhoodtrader
 pip install -r requirements.txt
 ```
 
-### 2. Generate an encryption key
+#### 2. Generate an encryption key
 
 Robinhood OAuth tokens are encrypted at rest. Generate once:
 
@@ -255,7 +306,7 @@ Robinhood OAuth tokens are encrypted at rest. Generate once:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-### 3. Configure environment
+#### 3. Configure environment
 
 ```bash
 cp .env.example .env
@@ -268,6 +319,7 @@ Fill in `.env`:
 ANTHROPIC_API_KEY=sk-ant-...
 DATABASE_URL=postgresql://localhost/robinhoodtrader
 ENCRYPTION_KEY=<key from step 2>
+DASHBOARD_SECRET=<choose a password for the dashboard>
 ROBINHOOD_REDIRECT_URI=http://localhost:8000/auth/robinhood/callback
 
 # Optional — SMS
@@ -284,10 +336,9 @@ SMTP_PASSWORD=...          # Gmail: use an App Password
 # Optional — tuning
 AGENT_INTERVAL_MINUTES=15
 PORT=8000
-DASHBOARD_SECRET=          # Set for Basic Auth (needed for public deployments)
 ```
 
-### 4. Create the database
+#### 4. Create the database
 
 ```bash
 # Mac
@@ -301,7 +352,7 @@ createdb robinhoodtrader
 
 Migrations run automatically on startup — no manual `alembic upgrade` needed.
 
-### 5. Start
+#### 5. Start
 
 ```bash
 python main.py
@@ -316,6 +367,8 @@ INFO  Uvicorn running on http://0.0.0.0:8000
 ```
 
 Open **http://localhost:8000**.
+
+---
 
 ### 6. Connect Robinhood
 

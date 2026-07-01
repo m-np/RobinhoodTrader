@@ -17,7 +17,6 @@ build/
 .venv/
 venv/
 env/
-.python-version
 
 # Database
 *.sqlite
