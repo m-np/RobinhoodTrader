@@ -29,7 +29,7 @@ def client():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _isolate_live_db():
+def _isolate_live_db(client):
     """
     Snapshot trades, alerts, and robinhood_tokens before the test session
     and restore them exactly after all tests finish.
@@ -44,7 +44,7 @@ def _isolate_live_db():
     def _snapshot(db, model):
         rows = db.query(model).all()
         return [
-            {col.name: getattr(row, col.name) for col in model.__table__.columns}
+            {c.name: getattr(row, c.name) for c in model.__table__.columns}
             for row in rows
         ]
 
