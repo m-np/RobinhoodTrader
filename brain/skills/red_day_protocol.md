@@ -45,19 +45,27 @@ their thesis. This is when the aggressive-disciplined investor acts.
 Before any red day entry, confirm the selloff is macro, not company-specific:
 
 1. Is the stock down roughly the same percentage as the sector ETF?
-   - Yes → macro selloff, proceed
+   - Compare watchlist_quotes[ticker].change_pct to market_snapshot.soxx_change_pct
+     (for semis) or xlk_change_pct (for broad tech)
+   - Stock decline ≤ 1.5× sector decline → macro selloff, proceed
    - Stock down significantly MORE than the sector → company-specific, do not buy
 
 2. Is there company-specific news today?
-   - Call `get_news(ticker)` and check for: earnings release, guidance change,
-     executive departure, product failure, regulatory action
-   - If any present → NOT a macro dip. Do not buy. Write a journal observation instead.
+   - Call `read_journal(ticker)` — check the most recent entries for: earnings release,
+     guidance change, executive departure, product failure, regulatory action
+   - Also review `recent_alerts` in context for any alerts flagging this ticker
+   - If company-specific bad news is present → NOT a macro dip. Do not buy.
+     Write a journal observation entry instead.
 
-3. Was the stock already in a downtrend before today?
-   - If yes → this is a downtrend with macro acceleration, not a macro dip
-   - Do not buy. The thesis may already be challenged.
+3. Was the stock already underperforming before today?
+   - Check journal_status[ticker].latest_sentiment — if it is challenged or broken,
+     the stock had accumulated negative sentiment before today's macro move
+   - If thesis_score is below 4, multiple prior observations flagged deterioration
+   - Either condition → do not buy; this is a weakening stock getting hit harder on
+     a macro day, not a fundamentally strong company being unfairly punished
 
 4. Read the latest journal entry for the ticker:
+   - Call `read_journal(ticker)` and read the most recent observation or update entry
    - If latest sentiment is challenged or broken → do not buy regardless of macro
 
 All four checks must pass before treating the day as a macro entry opportunity.

@@ -48,7 +48,7 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
 
     create_kwargs = dict(
         model="claude-sonnet-4-6",
-        max_tokens=4096,
+        max_tokens=8192,
         system=build_system_prompt(context["knobs"]),
         tools=_agent_tools(),
         messages=messages,
@@ -58,6 +58,10 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
 
     max_iterations = 10
     for iteration in range(max_iterations):
+        # First call: force a tool use so Claude doesn't spend all tokens on text.
+        # Subsequent calls: auto so Claude can end naturally after finishing work.
+        create_kwargs["tool_choice"] = {"type": "any"} if iteration == 0 else {"type": "auto"}
+
         response = _call_claude_with_retry(client, create_kwargs)
 
         messages.append({"role": "assistant", "content": response.content})
@@ -93,9 +97,12 @@ def _call_claude_with_retry(client: anthropic.Anthropic, kwargs: dict, max_retri
     for attempt in range(max_retries):
         try:
             return client.messages.create(**kwargs)
-        except anthropic.RateLimitError as e:
+        except anthropic.RateLimitError:
             wait = 2 ** attempt * 5  # 5s, 10s, 20s
-            logger.warning("Claude rate limited — retrying in %ds (attempt %d/%d)", wait, attempt + 1, max_retries)
+            logger.warning(
+                "Claude rate limited — retrying in %ds (attempt %d/%d)",
+                wait, attempt + 1, max_retries,
+            )
             time.sleep(wait)
         except anthropic.APIStatusError as e:
             if e.status_code >= 500 and attempt < max_retries - 1:
@@ -141,18 +148,30 @@ def _build_context(mcp_client: RobinhoodMCPClient) -> dict:
     watchlist_quotes = mcp_client.get_quotes_batch(watchlist) if watchlist else {}
 
     # Brain signals — market conditions, earnings alerts, thesis scores
-    market = _brain_market_snapshot()
+    market = _brain_market_snapshot(mcp_client)
     earnings_alerts: list = []
     journal_status: list = []
     try:
         from brain.catalyst_checker import (  # noqa: PLC0415
             get_earnings_alerts,
+            seed_earnings_cache,
         )
         from brain.journal_store import (  # noqa: PLC0415
             get_watchlist_with_status,
             init_db,
         )
         init_db()
+        # Seed earnings cache from MCP (no rate limits) before calling
+        # get_earnings_alerts(), which falls back to yfinance only on cache miss.
+        try:
+            mcp_earnings = mcp_client.get_earnings_calendar_raw(days_ahead=30)
+            if mcp_earnings:
+                seed_earnings_cache(mcp_earnings)
+                logger.info(
+                    "Earnings cache seeded from MCP: %d events", len(mcp_earnings)
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("MCP earnings calendar unavailable: %s", e)
         earnings_alerts = get_earnings_alerts(watchlist)
         journal_status = get_watchlist_with_status(
             tickers=watchlist
@@ -204,32 +223,88 @@ def _enrich_today_pnl(portfolio: dict) -> dict:
     return portfolio
 
 
-def _brain_market_snapshot() -> dict:
-    """Fetch live market conditions; return safe defaults on failure."""
+def _brain_market_snapshot(mcp_client=None) -> dict:
+    """Fetch live market conditions; return safe defaults on failure.
+
+    Tries Robinhood MCP first (always available, no rate limits), then
+    falls back to yfinance. This avoids the yfinance 429 problem that
+    caused sp500_change_pct to always return 0.0.
+    """
+    snap: dict = {
+        "sp500_change_pct": 0.0,
+        "vix": 15.0,
+        "soxx_change_pct": None,
+        "xlk_change_pct": None,
+        "sp500_above_50ma": True,
+    }
+
+    # Primary: Robinhood MCP quotes (reliable, no rate limit)
+    if mcp_client is not None:
+        try:
+            results = mcp_client._call(
+                "get_equity_quotes",
+                {"symbols": ["SPY", "SOXX", "XLK"]},
+            ).get("data", {}).get("results", [])
+            for r in results:
+                q = r.get("quote", {})
+                sym = q.get("symbol")
+                price = float(q.get("last_trade_price") or 0)
+                prev = float(
+                    q.get("previous_close")
+                    or q.get("adjusted_previous_close")
+                    or 0
+                )
+                if prev and price:
+                    chg = (price - prev) / prev
+                    if sym == "SPY":
+                        snap["sp500_change_pct"] = chg
+                    elif sym == "SOXX":
+                        snap["soxx_change_pct"] = chg
+                    elif sym == "XLK":
+                        snap["xlk_change_pct"] = chg
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MCP market snapshot failed: %s", exc)
+
+    # Fallback: yfinance (for VIX and 50-day MA which MCP doesn't provide)
     try:
-        from brain.red_day_detector import (  # noqa: PLC0415
-            classify_red_day,
-            get_market_snapshot,
-        )
-        snap = get_market_snapshot()
+        from brain.red_day_detector import get_market_snapshot  # noqa: PLC0415
+        yf_snap = get_market_snapshot()
+        snap["vix"] = yf_snap.get("vix", 15.0)
+        snap["sp500_above_50ma"] = yf_snap.get("sp500_above_50ma", True)
+        # Only use yfinance price data if MCP gave us nothing
+        if snap["sp500_change_pct"] == 0.0:
+            snap["sp500_change_pct"] = yf_snap.get("sp500_change_pct", 0.0)
+        if snap["soxx_change_pct"] is None:
+            snap["soxx_change_pct"] = yf_snap.get("soxx_change_pct")
+        if snap["xlk_change_pct"] is None:
+            snap["xlk_change_pct"] = yf_snap.get("xlk_change_pct")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("yfinance market snapshot failed: %s", exc)
+
+    try:
+        from brain.red_day_detector import classify_red_day  # noqa: PLC0415
         rd = classify_red_day(
-            snap["sp500_change_pct"], snap["vix"]
+            snap["sp500_change_pct"],
+            snap["vix"],
+            snap.get("soxx_change_pct"),
         )
+        # Convert fractions → actual percentages so Claude reads them correctly.
+        # classify_red_day already ran on raw fractions above; safe to convert now.
         return {
-            **snap,
+            "sp500_change_pct": round(snap["sp500_change_pct"] * 100, 3),
+            "soxx_change_pct": round((snap["soxx_change_pct"] or 0) * 100, 3),
+            "xlk_change_pct": round((snap["xlk_change_pct"] or 0) * 100, 3),
+            "vix": snap["vix"],
+            "sp500_above_50ma": snap["sp500_above_50ma"],
             "red_day_level": rd["level"],
             "red_day_label": rd["label"],
             "max_cash_deploy_pct": rd["max_cash_deploy_pct"],
             "eligible_tiers": rd["eligible_tiers"],
+            "_pct_note": "all _pct fields are actual percentages (e.g. -6.3 means -6.3%)",
         }
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Market snapshot failed: %s", exc)
-        return {
-            "sp500_change_pct": 0.0,
-            "vix": 15.0,
-            "red_day_level": 0,
-            "red_day_label": "none",
-        }
+        logger.warning("Red day classification failed: %s", exc)
+        return {**snap, "red_day_level": 0, "red_day_label": "none"}
 
 
 def _brain_gates(ticker: str, action: str) -> tuple[bool, str]:
@@ -279,6 +354,19 @@ def _handle_tool_call(
         return _create_alert(inputs)
     if name == "place_order":
         return _place_order(inputs, mcp_client, portfolio, notifier)
+    if name == "read_journal":
+        from brain.journal_store import read_journal as _rj  # noqa: PLC0415
+        return {"entries": _rj(inputs["ticker"])}
+    if name == "write_journal":
+        from brain.journal_store import write_entry as _we  # noqa: PLC0415
+        entry_id = _we(
+            ticker=inputs["ticker"],
+            entry_type=inputs["entry_type"],
+            text=inputs["text"],
+            sentiment=inputs.get("sentiment"),
+            tier=inputs.get("tier"),
+        )
+        return {"written": True, "entry_id": entry_id}
     return {"error": f"Unknown tool: {name}"}
 
 
@@ -467,6 +555,60 @@ def _agent_tools() -> list:
                 "latest portfolio state after a trade."
             ),
             "input_schema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "read_journal",
+            "description": (
+                "Read all journal entries for a ticker, newest first. "
+                "Call before every trade to read the full thesis, prior observations, "
+                "and sentiment history. journal_status in context has a summary; "
+                "call this for the full text of each entry."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "ticker": {"type": "string", "description": "Equity symbol"},
+                },
+                "required": ["ticker"],
+            },
+        },
+        {
+            "name": "write_journal",
+            "description": (
+                "Write a journal entry for a ticker. Use for every observation, "
+                "entry, exit, and thesis update. Every cycle must end with an "
+                "observation entry for each open position and each watchlist ticker "
+                "that was actively evaluated. These entries drive the thesis score "
+                "used in conviction sizing."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "ticker": {"type": "string"},
+                    "entry_type": {
+                        "type": "string",
+                        "enum": ["hypothesis", "observation", "entry", "update", "exit", "alert"],
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": (
+                            "Full entry text — be specific: "
+                            "prices, %, what changed, thesis status"
+                        ),
+                    },
+                    "sentiment": {
+                        "type": "string",
+                        "enum": ["strengthening", "neutral", "challenged", "broken"],
+                        "description": "Required for observation, update, and exit entries",
+                    },
+                    "tier": {
+                        "type": "string",
+                        "enum": ["core", "growth", "moonshot"],
+                        "description": "Set only on hypothesis entries",
+                    },
+                },
+                "required": ["ticker", "entry_type", "text"],
+            },
         },
         {
             "name": "place_order",

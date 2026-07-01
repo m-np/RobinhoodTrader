@@ -167,7 +167,10 @@ class RobinhoodMCPClient:
         except McpConnectionError:
             raise
         except httpx.HTTPStatusError as e:
-            logger.error("MCP HTTP %s [%s]: %s", e.response.status_code, tool, e.response.text[:200])
+            logger.error(
+                "MCP HTTP %s [%s]: %s",
+                e.response.status_code, tool, e.response.text[:200],
+            )
             raise McpConnectionError(f"HTTP {e.response.status_code}") from e
         except httpx.RequestError as e:
             raise McpConnectionError(str(e)) from e
@@ -326,7 +329,10 @@ class RobinhoodMCPClient:
                 }
             # If batch returned nothing, fall back to individual calls
             if not any(v["price"] is not None for v in quotes.values()):
-                logger.warning("get_quotes_batch: batch returned no prices, falling back to individual calls")
+                logger.warning(
+                    "get_quotes_batch: batch returned no prices, "
+                    "falling back to individual calls",
+                )
                 for t in upper:
                     q = self.get_quote(t)
                     quotes[t] = {"price": q.get("price"), "change_pct": q.get("change_pct")}
@@ -424,6 +430,34 @@ class RobinhoodMCPClient:
             action, ticker.upper(), label, order_id or "unknown",
         )
         return result
+
+    def get_earnings_calendar_raw(self, days_ahead: int = 30) -> list[dict]:
+        """Fetch upcoming earnings events from Robinhood MCP.
+
+        Returns a list of raw dicts — field names vary by API version, so callers
+        must check multiple keys (symbol/ticker, report_date/date/earnings_date).
+        Falls back gracefully to an empty list on any error.
+        """
+        from datetime import date, timedelta
+        today = date.today()
+        end = today + timedelta(days=days_ahead)
+        try:
+            result = self._call("get_earnings_calendar", {
+                "start_date": today.isoformat(),
+                "end_date": end.isoformat(),
+            })
+            data = result.get("data", result)
+            items = (
+                data.get("earnings")
+                or data.get("results")
+                or data.get("items")
+                or []
+            )
+            if isinstance(items, list):
+                return items
+        except Exception as e:  # noqa: BLE001
+            logger.warning("MCP get_earnings_calendar failed: %s", e)
+        return []
 
     def cancel_order(self, order_id: str) -> dict:
         acct = self._get_agentic_account()

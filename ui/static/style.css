@@ -135,6 +135,88 @@ body {
   line-height: 1;
 }
 
+/* ── Agent brain card ────────────────────────────────────────────────────── */
+.agent-chip {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: var(--bg-3);
+  color: var(--text-2);
+}
+.agent-chip.running {
+  background: var(--blue-bg);
+  color: var(--blue);
+  animation: chip-pulse 1.4s ease-in-out infinite;
+}
+.agent-chip.error { background: var(--red-bg); color: var(--red); }
+@keyframes chip-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.55; }
+}
+.agent-card {
+  padding: 0;
+  max-height: 380px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
+.agent-meta {
+  font-size: 11px;
+  color: var(--text-3);
+  padding: 8px 12px 4px;
+  border-bottom: 0.5px solid var(--border);
+}
+.agent-thought {
+  padding: 8px 12px;
+  border-bottom: 0.5px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+.agent-thought:last-child { border-bottom: none; }
+.agent-thought:hover { background: var(--bg-2); }
+.agent-thought-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.agent-thought-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+.agent-thought-dot.critical { background: var(--red); }
+.agent-thought-dot.warning  { background: var(--amber); }
+.agent-thought-dot.info     { background: var(--text-3); }
+.agent-thought-headline {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+  flex: 1;
+}
+.agent-thought-chevron {
+  font-size: 10px;
+  color: var(--text-3);
+  flex-shrink: 0;
+  margin-top: 2px;
+  transition: transform 0.2s;
+}
+.agent-thought.open .agent-thought-chevron { transform: rotate(180deg); }
+.agent-thought-body {
+  display: none;
+  margin-top: 6px;
+  padding: 8px;
+  background: var(--bg-2);
+  border-radius: var(--radius);
+  font-size: 11.5px;
+  color: var(--text-2);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.agent-thought.open .agent-thought-body { display: block; }
+
 /* ── Page ─────────────────────────────────────────────────────────────────── */
 .page {
   padding-top: 72px;
@@ -373,18 +455,31 @@ body {
 .badge-purple { background: var(--purple-bg); color: var(--purple); }
 
 /* ── Watchlist rows ───────────────────────────────────────────────────────── */
+.watchlist-scroll {
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
 .watch-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 7px 0;
+  padding: 7px 14px;
   border-bottom: 0.5px solid var(--border);
 }
 .watch-row:last-child { border-bottom: none; }
+.watch-row:hover { background: var(--bg-2); }
 .watch-ticker { font-size: 13px; font-weight: 500; }
 .watch-right { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
 .watch-price { font-size: 13px; }
 .watch-chg { font-size: 12px; }
+.watch-status-row {
+  font-size: 11px;
+  padding: 6px 14px;
+  border-top: 0.5px solid var(--border);
+  color: var(--text-3);
+}
 
 /* ── Pills ────────────────────────────────────────────────────────────────── */
 .pill-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0; }

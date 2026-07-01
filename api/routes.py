@@ -36,8 +36,10 @@ from db.models import (
     get_tokens, save_tokens,
 )
 
+import time as _time_mod
 router = APIRouter()
 templates = Jinja2Templates(directory="ui/templates")
+templates.env.globals["static_v"] = int(_time_mod.time())
 _mcp = None
 
 
@@ -184,6 +186,97 @@ async def api_journal_delete(ticker: str, entry_id: int):
 
 
 # ── Portfolio / wallet ────────────────────────────────────
+
+_manual_triggers: list = []          # timestamps of manual trigger calls
+_TRIGGER_MAX = 10                    # max triggers before cooldown
+_TRIGGER_WINDOW = 30 * 60           # rolling 30-minute window (seconds)
+_COOLDOWN_SECS = 5 * 60             # 5-minute cooldown once limit hit
+_cooldown_until: datetime | None = None
+
+
+@router.post("/api/agent/run")
+async def api_agent_run():
+    global _manual_triggers, _cooldown_until
+    from agent.scheduler import get_cycle_state, trigger_manual_run
+    from datetime import timedelta
+    from fastapi.responses import JSONResponse
+
+    now = datetime.utcnow()
+
+    # Active cooldown check
+    if _cooldown_until and now < _cooldown_until:
+        remaining = int((_cooldown_until - now).total_seconds())
+        return JSONResponse(status_code=429, content={
+            "ok": False,
+            "reason": "cooldown",
+            "retry_after": remaining,
+            "message": (
+                f"Too many manual triggers. Cooldown active — "
+                f"try again in {remaining // 60}m {remaining % 60}s."
+            ),
+        })
+
+    # Prune triggers outside the rolling window
+    cutoff = now.timestamp() - _TRIGGER_WINDOW
+    _manual_triggers = [t for t in _manual_triggers if t > cutoff]
+
+    if len(_manual_triggers) >= _TRIGGER_MAX:
+        _cooldown_until = now + timedelta(seconds=_COOLDOWN_SECS)
+        return JSONResponse(status_code=429, content={
+            "ok": False,
+            "reason": "cooldown",
+            "retry_after": _COOLDOWN_SECS,
+            "message": (
+                f"You've triggered {_TRIGGER_MAX} manual cycles. "
+                f"Taking a {_COOLDOWN_SECS // 60}-minute break to protect the account."
+            ),
+        })
+
+    # Already running
+    if get_cycle_state()["status"] == "running":
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "already_running",
+        })
+
+    _manual_triggers.append(now.timestamp())
+    triggers_used = len(_manual_triggers)
+    trigger_manual_run()
+    return {
+        "ok": True,
+        "triggers_used": triggers_used,
+        "triggers_remaining": _TRIGGER_MAX - triggers_used,
+        "warn": (_TRIGGER_MAX - triggers_used) <= 3,
+    }
+
+
+@router.get("/api/agent/cycle_status")
+async def api_cycle_status(db: Session = Depends(get_db)):
+    from agent.scheduler import get_cycle_state
+    state = get_cycle_state()
+    # Last few non-approval alerts = Claude's recent observations
+    _SEV = {"critical": 0, "warning": 1, "info": 2}
+    rows = (
+        db.query(Alert)
+        .filter(Alert.alert_type != "approval_request")
+        .order_by(Alert.created_at.desc())
+        .limit(60)
+        .all()
+    )
+    # Sort: severity priority first, then most-recent within same tier
+    rows.sort(key=lambda a: (_SEV.get(a.severity or "info", 2), -(
+        a.created_at.timestamp() if a.created_at else 0
+    )))
+    state["recent_thoughts"] = [
+        {
+            "headline": a.message.split("\n")[0].strip()[:120],
+            "body": a.message,
+            "severity": a.severity or "info",
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+        }
+        for a in rows
+    ]
+    return state
+
 
 @router.get("/api/portfolio")
 async def api_portfolio(db: Session = Depends(get_db)):

@@ -91,6 +91,21 @@
 
   <!-- Sidebar -->
   <div>
+    <!-- Agent brain status -->
+    <div class="sidebar-section">
+      <div class="section-header">
+        <span class="section-title">Agent brain</span>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span id="agent-status-chip" class="agent-chip">—</span>
+          <button class="btn-sm" id="agent-run-btn" onclick="triggerAgentCycle()">Run</button>
+        </div>
+      </div>
+      <div id="agent-rate-warn" style="display:none;font-size:11px;color:var(--amber);padding:4px 0 2px"></div>
+      <div class="card agent-card" id="agent-card">
+        <p style="color:var(--text-3);font-size:12px">Loading…</p>
+      </div>
+    </div>
+
     <!-- Watchlist widget -->
     <div class="sidebar-section">
       <div class="section-header">
@@ -105,8 +120,8 @@
           <button class="btn-sm" onclick="showAddWatch()">Cancel</button>
         </div>
       </div>
-      <div class="card" id="watchlist-widget">
-        <p style="color:var(--text-3);font-size:12px">Loading...</p>
+      <div class="card watchlist-scroll" id="watchlist-widget">
+        <p style="color:var(--text-3);font-size:12px;padding:10px 14px">Loading...</p>
       </div>
     </div>
 

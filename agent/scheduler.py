@@ -1,4 +1,5 @@
 import logging
+import threading
 from datetime import datetime
 
 import pytz
@@ -22,6 +23,25 @@ ET = pytz.timezone("America/New_York")
 _mcp_client: RobinhoodMCPClient | None = None
 _scheduler: BackgroundScheduler | None = None
 
+_cycle_state: dict = {
+    "status": "idle",   # "running" | "idle" | "error"
+    "started_at": None,
+    "finished_at": None,
+    "error": None,
+}
+
+
+def get_cycle_state() -> dict:
+    return dict(_cycle_state)
+
+
+def trigger_manual_run() -> bool:
+    """Spawn _run_agent in a background thread. Returns False if already running."""
+    if _cycle_state["status"] == "running":
+        return False
+    threading.Thread(target=_run_agent, daemon=True).start()
+    return True
+
 
 def _get_mcp() -> RobinhoodMCPClient:
     global _mcp_client
@@ -31,12 +51,21 @@ def _get_mcp() -> RobinhoodMCPClient:
 
 
 def _run_agent():
+    global _cycle_state
+    _cycle_state["status"] = "running"
+    _cycle_state["started_at"] = datetime.utcnow().isoformat()
+    _cycle_state["error"] = None
     try:
         mcp = _get_mcp()
         run_agent_cycle(mcp_client=mcp)
         _save_portfolio_snapshot(mcp)
+        _cycle_state["status"] = "idle"
     except Exception as e:
+        _cycle_state["status"] = "error"
+        _cycle_state["error"] = str(e)
         logger.exception("Agent cycle error: %s", e)
+    finally:
+        _cycle_state["finished_at"] = datetime.utcnow().isoformat()
 
 
 def _save_portfolio_snapshot(mcp: RobinhoodMCPClient) -> None:

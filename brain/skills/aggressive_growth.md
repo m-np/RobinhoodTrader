@@ -159,9 +159,9 @@ Compute this score before every trade. Score determines position size within the
 | Journal entries with sentiment (1pt each, max 3) | 0–3 |
 | Latest journal sentiment: strengthening=2, neutral=1, challenged=0 | 0–2 |
 | Red day entry: broad market macro dip, not company news | 0–1 |
-| Volume confirmation: current volume >20% above 30-day average | 0–1 |
+| Relative strength: stock change_pct ≥ sector ETF change_pct today | 0–1 |
 | Entry signal categories fired (1pt each, max 2) | 0–2 |
-| Insider buying confirmed via SEC Form 4 in last 30 days | 0–1 |
+| Journal depth: thesis_score ≥ 7 with 5+ sentiment entries on record | 0–1 |
 
 Maximum: 10
 
@@ -202,11 +202,12 @@ Sector assignment is determined by primary revenue source, not by marketing lang
 ## Adding to Winning Positions
 
 Only add after ALL are true:
-- Position is 5%+ above your entry price
-- Trend is intact: price above 20-day MA, MA sloping upward
+- Position is 5%+ above your entry price (check pnl_pct in portfolio holdings)
+- Stock is NOT declining today relative to its sector — stock change_pct ≥ sector ETF change_pct
+  (not adding into an intraday reversal)
 - Latest journal sentiment is neutral or strengthening
 - Adding does not breach tier maximum
-- You are buying a pullback within the uptrend — not adding at a new 52-week high
+- You are not chasing: stock has not gapped up 5%+ today without a thesis event
 
 Add size: no more than 50% of the original position in the add.
 After adding, the new average cost becomes the new stop loss anchor.

@@ -4,9 +4,12 @@ red_day_protocol.md and fetches live market conditions via yfinance.
 """
 from __future__ import annotations
 
+import logging
 import time as _time
 
 import yfinance as yf  # type: ignore[import]
+
+logging.getLogger("yfinance").setLevel(logging.WARNING)
 
 # Cache market snapshot for 30 minutes to avoid yfinance 429 rate-limits
 _snapshot_cache: dict = {}

@@ -3,6 +3,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   setInterval(pollAlerts, 30000);
   setInterval(loadWatchlist, 5000);    // quotes: 5 s (1 MCP call)
   setInterval(loadPortfolio, 15000);  // holdings + P&L: 15 s (3 MCP calls)
+  loadCyclePulse();
+  setInterval(loadCyclePulse, 30000);
 });
 
 async function loadAll() {
@@ -15,7 +17,185 @@ async function loadAll() {
     loadBlocklist(),
     loadMirrors(),
     loadKnobs(),
+    loadCyclePulse(),
   ]);
+}
+
+// Agent brain card — shows cycle status + Claude's recent observations
+async function loadCyclePulse() {
+  const chip = document.getElementById('agent-status-chip');
+  const card = document.getElementById('agent-card');
+  if (!chip || !card) return;
+
+  let d;
+  try {
+    const res = await fetch('/api/agent/cycle_status');
+    if (!res.ok) {
+      card.innerHTML = '<p class="agent-meta">Could not reach agent status.</p>';
+      return;
+    }
+    d = await res.json();
+  } catch (e) {
+    card.innerHTML = '<p class="agent-meta">Could not reach agent status.</p>';
+    return;
+  }
+
+  // Update the status chip
+  chip.className = 'agent-chip';
+  const runBtn = document.getElementById('agent-run-btn');
+  if (d.status === 'running') {
+    chip.classList.add('running');
+    chip.textContent = 'Analyzing…';
+    if (runBtn && runBtn.textContent === 'Run') {
+      runBtn.disabled = true;
+      runBtn.textContent = 'Running';
+    }
+  } else if (d.status === 'error') {
+    chip.classList.add('error');
+    chip.textContent = 'Error';
+    if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Run'; }
+  } else {
+    chip.textContent = d.finished_at ? timeAgo(d.finished_at) + ' ago' : 'Idle';
+    if (runBtn && runBtn.textContent === 'Running') {
+      runBtn.disabled = false;
+      runBtn.textContent = 'Run';
+    }
+  }
+
+  // Populate card body
+  if (d.status === 'running') {
+    card.innerHTML = '<p class="agent-meta">Claude is reading market data and checking your watchlist…</p>';
+    return;
+  }
+  if (d.status === 'error') {
+    card.innerHTML = `<p class="agent-meta" style="color:var(--red)">${d.error || 'Unknown error'}</p>`;
+    return;
+  }
+
+  const thoughts = d.recent_thoughts || [];
+  if (!thoughts.length) {
+    card.innerHTML = '<p class="agent-meta">No cycle has run yet — starts automatically.</p>';
+    return;
+  }
+
+  const meta = d.finished_at
+    ? `<div class="agent-meta">Last scan ${timeAgo(d.finished_at)} ago · every 15 min · ${thoughts.length} observations</div>`
+    : `<div class="agent-meta">Waiting for first cycle… · ${thoughts.length} observations</div>`;
+
+  const items = thoughts.map((t, i) => {
+    const sev = t.severity || 'info';
+    const body = (t.body || '').trim();
+    const hasMore = body.length > t.headline.length + 5;
+    return `
+    <div class="agent-thought" id="thought-${i}" onclick="toggleThought(${i})">
+      <div class="agent-thought-header">
+        <span class="agent-thought-dot ${sev}"></span>
+        <span class="agent-thought-headline">${escHtml(t.headline)}</span>
+        ${hasMore ? '<span class="agent-thought-chevron">▾</span>' : ''}
+      </div>
+      ${hasMore ? `<div class="agent-thought-body">${escHtml(body)}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  card.innerHTML = meta + items;
+}
+
+function toggleThought(i) {
+  const el = document.getElementById('thought-' + i);
+  if (el) el.classList.toggle('open');
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function timeAgo(isoStr) {
+  const secs = Math.round((Date.now() - new Date(isoStr + (isoStr.endsWith('Z') ? '' : 'Z'))) / 1000);
+  if (secs < 60)   return `${secs}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m`;
+  return `${Math.floor(secs / 3600)}h`;
+}
+
+let _cooldownTimer = null;
+
+async function triggerAgentCycle() {
+  const btn  = document.getElementById('agent-run-btn');
+  const warn = document.getElementById('agent-rate-warn');
+  if (!btn) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Starting…';
+
+  let data;
+  try {
+    const res = await fetch('/api/agent/run', { method: 'POST' });
+    data = await res.json();
+
+    if (res.status === 409) {
+      btn.textContent = 'Already running';
+      setTimeout(() => { btn.disabled = false; btn.textContent = 'Run'; }, 3000);
+      return;
+    }
+
+    if (res.status === 429) {
+      // Cooldown — show warning and countdown on the button
+      if (warn) {
+        warn.style.display = 'block';
+        warn.textContent = data.message || 'Too many triggers. Please wait.';
+      }
+      startCooldownBtn(btn, data.retry_after || 300);
+      return;
+    }
+
+    // Success
+    if (data.warn && warn) {
+      warn.style.display = 'block';
+      warn.textContent = `Warning: ${data.triggers_remaining} manual trigger${data.triggers_remaining === 1 ? '' : 's'} left before cooldown.`;
+    } else if (warn) {
+      warn.style.display = 'none';
+    }
+
+    btn.textContent = 'Running';
+    // Poll until cycle finishes
+    const poll = setInterval(async () => {
+      await loadCyclePulse();
+      const chip = document.getElementById('agent-status-chip');
+      if (chip && chip.textContent !== 'Analyzing…') {
+        clearInterval(poll);
+        btn.disabled = false;
+        btn.textContent = 'Run';
+      }
+    }, 3000);
+
+  } catch (_) {
+    btn.disabled = false;
+    btn.textContent = 'Run';
+  }
+}
+
+function startCooldownBtn(btn, seconds) {
+  if (_cooldownTimer) clearInterval(_cooldownTimer);
+  let remaining = seconds;
+  const update = () => {
+    if (remaining <= 0) {
+      clearInterval(_cooldownTimer);
+      btn.disabled = false;
+      btn.textContent = 'Run';
+      const warn = document.getElementById('agent-rate-warn');
+      if (warn) warn.style.display = 'none';
+      return;
+    }
+    const m = Math.floor(remaining / 60);
+    const s = remaining % 60;
+    btn.textContent = m > 0 ? `${m}m ${s}s` : `${s}s`;
+    remaining--;
+  };
+  update();
+  _cooldownTimer = setInterval(update, 1000);
 }
 
 // Robinhood connection status
@@ -413,7 +593,7 @@ async function loadWatchlist() {
             </div>
           </div>
         `).join('') +
-        `<div style="font-size:11px;color:${statusColor};padding:7px 0 2px;border-top:0.5px solid var(--border);margin-top:4px">${statusText}</div>`;
+        `<div class="watch-status-row" style="color:${statusColor}">${statusText}</div>`;
       }
     }
     const tbody = document.getElementById('watchlist-tbody');

@@ -1,21 +1,109 @@
 """
 Catalyst checker — earnings countdown gate and FOMC calendar.
 
-Uses yfinance for earnings dates. FOMC dates are hardcoded and updated
-annually per catalyst_calendar.md.
+Earnings dates are fetched at most once per calendar day and persisted to
+SQLite so server restarts do not trigger new network calls. The lookup
+priority is: in-memory cache → DB (same day) → Robinhood MCP seed → yfinance.
 """
 from __future__ import annotations
 
+import logging
+import sqlite3
 import time as _time
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import yfinance as yf  # type: ignore[import]
 
-# Cache earnings dates for 4 hours to avoid yfinance 429 rate-limits
-# when 22 watchlist tickers are checked every 15-minute agent cycle.
-_earnings_cache: dict[str, tuple[Optional[date], float]] = {}  # ticker → (date|None, expires_ts)
-_CACHE_TTL = 4 * 3600  # 4 hours
+logging.getLogger("yfinance").setLevel(logging.WARNING)
+
+_DB_PATH = "data/trader.db"
+
+# In-memory cache: ticker → (earnings_date | None, expires_monotonic)
+# Populated from DB on first access and from MCP/yfinance on cache miss.
+_earnings_cache: dict[str, tuple[Optional[date], float]] = {}
+_CACHE_TTL = 24 * 3600  # seconds — matches one calendar day
+
+
+# ---------------------------------------------------------------------------
+# DB persistence — once-per-day, survives restarts
+# ---------------------------------------------------------------------------
+
+def _db_connect(db_path: str = _DB_PATH) -> sqlite3.Connection:
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _ensure_earnings_table(db_path: str = _DB_PATH) -> None:
+    with _db_connect(db_path) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS earnings_dates (
+                ticker       TEXT PRIMARY KEY,
+                earnings_date TEXT,
+                fetched_date TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+
+
+def _load_db_cache(db_path: str = _DB_PATH) -> dict[str, Optional[date]]:
+    """Return all rows whose fetched_date == today. Empty dict if none."""
+    today_str = _today().isoformat()
+    try:
+        with _db_connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT ticker, earnings_date FROM earnings_dates "
+                "WHERE fetched_date = ?",
+                (today_str,),
+            ).fetchall()
+        return {
+            r["ticker"]: (
+                date.fromisoformat(r["earnings_date"])
+                if r["earnings_date"] else None
+            )
+            for r in rows
+        }
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _save_db_cache(
+    data: dict[str, Optional[date]],
+    db_path: str = _DB_PATH,
+) -> None:
+    """Upsert earnings dates into the DB tagged with today's date."""
+    today_str = _today().isoformat()
+    try:
+        with _db_connect(db_path) as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO earnings_dates "
+                "(ticker, earnings_date, fetched_date) VALUES (?, ?, ?)",
+                [
+                    (t, ed.isoformat() if ed else None, today_str)
+                    for t, ed in data.items()
+                ],
+            )
+            conn.commit()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _warm_memory_cache_from_db(db_path: str = _DB_PATH) -> None:
+    """Load today's DB rows into the in-memory cache (called once on init)."""
+    _ensure_earnings_table(db_path)
+    rows = _load_db_cache(db_path)
+    if not rows:
+        return
+    now = _time.monotonic()
+    for ticker, ed in rows.items():
+        _earnings_cache[ticker] = (ed, now + _CACHE_TTL)
+    logger.debug("Earnings cache warmed from DB: %d tickers", len(rows))
+
+
+logger = logging.getLogger(__name__)
 
 _FOMC_2026: list[date] = [
     date(2026, 1, 29),
@@ -35,6 +123,10 @@ _WARN_21 = 21
 
 def _today() -> date:
     return datetime.now(timezone.utc).date()
+
+
+# Warm in-memory cache from DB at import time (server restart recovery).
+_warm_memory_cache_from_db()
 
 
 def _coerce_to_date(item: object) -> date | None:
@@ -67,7 +159,12 @@ def _raw_earnings_list(ticker: str) -> list | None:
 
 
 def _parse_earnings(ticker: str) -> date | None:
-    """Return the next upcoming earnings date, or None (with 4-hour cache)."""
+    """Return the next upcoming earnings date, or None.
+
+    Lookup order: in-memory cache → yfinance (last resort).
+    Writes yfinance results to both memory cache and DB so the next
+    restart does not trigger another network call today.
+    """
     sym = ticker.upper()
     cached_val, expires = _earnings_cache.get(sym, (None, 0.0))
     if _time.monotonic() < expires:
@@ -76,7 +173,6 @@ def _parse_earnings(ticker: str) -> date | None:
     try:
         raw = _raw_earnings_list(sym)
     except Exception:  # noqa: BLE001
-        # Cache None on error to avoid hammering yfinance on 429s
         _earnings_cache[sym] = (None, _time.monotonic() + _CACHE_TTL)
         return None
     if raw is None:
@@ -89,6 +185,8 @@ def _parse_earnings(ticker: str) -> date | None:
     ]
     result = min(candidates) if candidates else None
     _earnings_cache[sym] = (result, _time.monotonic() + _CACHE_TTL)
+    # Persist so server restarts don't re-query yfinance today
+    _save_db_cache({sym: result})
     return result
 
 
@@ -174,25 +272,61 @@ def _alert_for_days(sym: str, dte: int) -> dict:
     }
 
 
+def seed_earnings_cache(mcp_items: list[dict]) -> None:
+    """Pre-populate the earnings cache from Robinhood MCP data.
+
+    Writes to both the in-memory cache and the DB so subsequent restarts
+    today do not trigger any network calls.
+
+    Args:
+        mcp_items: Raw dicts from mcp_client.get_earnings_calendar_raw().
+    """
+    from datetime import datetime as _dt
+    now = _time.monotonic()
+    today = _today()
+    to_persist: dict[str, Optional[date]] = {}
+    for item in mcp_items:
+        sym = (item.get("symbol") or item.get("ticker") or "").upper()
+        raw = (
+            item.get("report_date")
+            or item.get("date")
+            or item.get("earnings_date")
+        )
+        if not sym or not raw:
+            continue
+        try:
+            d = _dt.fromisoformat(str(raw)[:10]).date()
+        except (ValueError, TypeError):
+            continue
+        if d < today:
+            continue
+        existing, _ = _earnings_cache.get(sym, (None, 0.0))
+        if existing is None or d < existing:
+            _earnings_cache[sym] = (d, now + _CACHE_TTL)
+            to_persist[sym] = d
+    if to_persist:
+        _save_db_cache(to_persist)
+
+
 def get_earnings_alerts(symbols: list[str]) -> list[dict]:
     """Build countdown alerts for tickers with upcoming earnings.
+
+    Call seed_earnings_cache() first to avoid yfinance rate limits.
+    The cache (whether seeded from MCP or from prior yfinance calls) is
+    checked before any network request is made.
 
     Args:
         symbols: Equity symbols to check.
 
     Returns:
-        List of dicts: {ticker, days_to_earnings, level,
-        action_required}.
+        List of dicts: {ticker, days_to_earnings, level, action_required}.
     """
-    import time
     alerts: list[dict] = []
     for sym in symbols:
         dte = days_to_earnings(sym.upper())
         if dte is None or dte > _WARN_21:
-            time.sleep(0.3)  # avoid Yahoo Finance 429 rate limit on large watchlists
             continue
         alerts.append(_alert_for_days(sym.upper(), dte))
-        time.sleep(0.3)
     return alerts
 
 
