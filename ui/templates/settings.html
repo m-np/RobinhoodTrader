@@ -21,6 +21,101 @@
   </div>
 </div>
 
+<!-- Agent cycle schedule -->
+<div class="settings-card">
+  <div class="settings-card-title">Agent cycle</div>
+  <p class="settings-card-desc">How often the agent scans your portfolio and watchlist. More frequent = higher AI cost. <strong>Max trades per day</strong> (in Risk limits below) caps how many orders actually execute — scan frequency and trade frequency are independent.</p>
+
+  <div class="knob-row">
+    <div class="knob-label">
+      <span class="knob-name">Schedule mode</span>
+      <span class="knob-desc">Interval runs 24/7; Fixed times runs only at set market hours</span>
+    </div>
+    <div class="seg-control" id="seg-schedule-mode">
+      <button class="seg-btn active" data-value="interval"
+              onclick="setSeg('agent_schedule_mode','interval',this); showSchedulePanel('interval')">
+        Every N minutes
+      </button>
+      <button class="seg-btn" data-value="fixed"
+              onclick="setSeg('agent_schedule_mode','fixed',this); showSchedulePanel('fixed')">
+        Fixed times
+      </button>
+    </div>
+  </div>
+
+  <!-- Interval panel -->
+  <div id="panel-interval">
+    <div class="knob-row">
+      <div class="knob-label">
+        <span class="knob-name">Scan every</span>
+        <span class="knob-desc">Applies during all hours, including overnight and weekends</span>
+      </div>
+      <div class="seg-control" id="seg-schedule-interval">
+        <button class="seg-btn active" data-value="15"
+                onclick="setSeg('agent_interval_minutes',15,this); updateCostEstimate()">15 min</button>
+        <button class="seg-btn" data-value="30"
+                onclick="setSeg('agent_interval_minutes',30,this); updateCostEstimate()">30 min</button>
+        <button class="seg-btn" data-value="60"
+                onclick="setSeg('agent_interval_minutes',60,this); updateCostEstimate()">1 hr</button>
+        <button class="seg-btn" data-value="120"
+                onclick="setSeg('agent_interval_minutes',120,this); updateCostEstimate()">2 hr</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fixed times panel — one knob-row per slot, standard toggle on right -->
+  <div id="panel-fixed" style="display:none">
+    <div class="knob-row">
+      <div class="knob-label">
+        <span class="knob-name">Market open</span>
+        <span class="knob-desc">9:30 AM ET, Monday–Friday</span>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" class="sched-time-cb" data-time="09:30"
+               onchange="saveScheduleTimes(); updateCostEstimate()">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    <div class="knob-row">
+      <div class="knob-label">
+        <span class="knob-name">Midday</span>
+        <span class="knob-desc">12:00 PM ET, Monday–Friday</span>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" class="sched-time-cb" data-time="12:00"
+               onchange="saveScheduleTimes(); updateCostEstimate()">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    <div class="knob-row">
+      <div class="knob-label">
+        <span class="knob-name">Pre-close</span>
+        <span class="knob-desc">3:30 PM ET, Monday–Friday</span>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" class="sched-time-cb" data-time="15:30"
+               onchange="saveScheduleTimes(); updateCostEstimate()">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <!-- Cost estimate — full width, two lines so the breakdown doesn't overflow -->
+  <div style="padding:12px 0 2px; border-top:0.5px solid var(--border); margin-top:4px">
+    <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px">
+      <span class="knob-name">Estimated AI cost</span>
+      <span id="cost-estimate-main"
+            style="font-size:16px; font-weight:600; color:var(--text-1); white-space:nowrap">—</span>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:baseline;
+                gap:12px; margin-top:4px">
+      <span class="knob-desc">claude-sonnet-4-6 with prompt caching · 22 trading days/month</span>
+      <span id="cost-estimate-detail"
+            style="font-size:12px; color:var(--text-3); white-space:nowrap">—</span>
+    </div>
+  </div>
+</div>
+
 <!-- Asset classes -->
 <div class="settings-card">
   <div class="settings-card-title">What can the agent trade?</div>
@@ -422,6 +517,68 @@
 
 {% block scripts %}
 <script>
+// ── Agent cycle schedule card ──────────────────────────────────────
+function showSchedulePanel(mode) {
+  document.getElementById('panel-interval').style.display =
+    mode === 'interval' ? '' : 'none';
+  document.getElementById('panel-fixed').style.display =
+    mode === 'fixed' ? '' : 'none';
+  updateCostEstimate();
+}
+
+function updateCostEstimate() {
+  const modeBtn = document.querySelector('#seg-schedule-mode .seg-btn.active');
+  const mode = modeBtn ? modeBtn.dataset.value : 'interval';
+
+  let cyclesPerDay;
+  if (mode === 'fixed') {
+    cyclesPerDay = document.querySelectorAll('.sched-time-cb:checked').length || 1;
+  } else {
+    const intBtn = document.querySelector('#seg-schedule-interval .seg-btn.active');
+    const mins = intBtn ? parseInt(intBtn.dataset.value) : 15;
+    cyclesPerDay = Math.floor(390 / mins); // 6.5 market hours
+  }
+
+  // ~$0.35/cycle — measured (5 iterations, 8k token system prompt, tool results)
+  const costPerCycle = 0.35;
+  const perDay   = cyclesPerDay * costPerCycle;
+  const perMonth = cyclesPerDay * 22 * costPerCycle;
+
+  const main   = document.getElementById('cost-estimate-main');
+  const detail = document.getElementById('cost-estimate-detail');
+  if (main)   main.textContent   = `~$${perMonth.toFixed(0)}/month`;
+  if (detail) detail.textContent = `$${perDay.toFixed(2)}/day · ${cyclesPerDay} cycles/day`;
+}
+
+async function saveScheduleTimes() {
+  const checked = [...document.querySelectorAll('.sched-time-cb:checked')]
+    .map(cb => cb.dataset.time)
+    .sort();
+  const times = checked.length ? checked.join(',') : '09:30,12:00,15:30';
+  await saveKnob('agent_schedule_times', times);
+}
+
+function initScheduleCard(knobs) {
+  // Sync mode seg + show correct panel
+  const mode = knobs.agent_schedule_mode || 'interval';
+  syncSeg('seg-schedule-mode', mode);
+  showSchedulePanel(mode);
+
+  // Sync interval seg
+  const mins = knobs.agent_interval_minutes || 15;
+  syncSeg('seg-schedule-interval', String(mins));
+
+  // Sync fixed-time checkboxes
+  const times = (knobs.agent_schedule_times || '09:30,12:00,15:30')
+    .split(',').map(t => t.trim());
+  document.querySelectorAll('.sched-time-cb').forEach(cb => {
+    cb.checked = times.includes(cb.dataset.time);
+  });
+
+  updateCostEstimate();
+}
+// ──────────────────────────────────────────────────────────────────
+
 (async function () {
   try {
     const res = await fetch('/api/notify/status');

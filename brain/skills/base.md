@@ -54,9 +54,15 @@ Doing nothing and explaining why is a valid and often correct outcome.
   local tools enforce safety guardrails before reaching the exchange
 - Use `get_portfolio` to refresh holdings before any buy order (current prices for
   watchlist tickers are already in the context under `watchlist_quotes`)
-- Use `read_journal(ticker)` to read the full thesis and prior entries before any trade
-- Use `write_journal(ticker, entry_type, text, sentiment)` to record observations,
-  entry/exit notes, and thesis updates — this is how thesis scores are updated
+- Use `read_journal(ticker)` only when ALL three are true:
+  (1) `journal_status` shows `thesis_score >= 6` for that ticker,
+  (2) `latest_sentiment` is `strengthening` or `neutral`,
+  (3) at least one entry signal from stocks.md is firing for that ticker today.
+  Do not call `read_journal` to scan the watchlist broadly —
+  `journal_status` already contains thesis_score and sentiment for every ticker.
+- Use `write_journal(ticker, entry_type, text, sentiment)` for entries, exits,
+  thesis updates, and observations on open positions or tickers with active signals.
+  Do not write boilerplate observations for tickers where nothing happened this cycle.
 - Use `create_alert` for dashboard notifications: market conditions, wallet warnings,
   blocked trades, or anything worth surfacing that does not require a journal entry
 - Journal summary data (tier, entry_count, latest_sentiment, thesis_score) is

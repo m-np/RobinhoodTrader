@@ -23,6 +23,8 @@ ET = pytz.timezone("America/New_York")
 _mcp_client: RobinhoodMCPClient | None = None
 _scheduler: BackgroundScheduler | None = None
 
+_AGENT_JOB_PREFIX = "agent_cycle"
+
 _cycle_state: dict = {
     "status": "idle",   # "running" | "idle" | "error"
     "started_at": None,
@@ -314,19 +316,65 @@ def _run_discovery():
         logger.exception("Stock discovery error: %s", e)
 
 
+def reschedule_agent() -> None:
+    """Hot-swap the agent cycle job based on current knob values.
+
+    Called at startup and whenever schedule knobs change via the UI.
+    Mode "interval": run every N minutes (existing behaviour).
+    Mode "fixed": run at specific ET times on market days only.
+    """
+    if _scheduler is None:
+        return
+
+    # Remove all existing agent cycle jobs
+    for job in list(_scheduler.get_jobs()):
+        if job.id.startswith(_AGENT_JOB_PREFIX):
+            job.remove()
+
+    mode = get_knob("agent_schedule_mode", "interval")
+
+    if mode == "fixed":
+        times_raw = get_knob(
+            "agent_schedule_times", "09:30,12:00,15:30"
+        )
+        times = [
+            t.strip() for t in times_raw.split(",") if t.strip()
+        ] or ["09:30", "12:00", "15:30"]
+        for i, t in enumerate(times):
+            h, m = map(int, t.split(":"))
+            _scheduler.add_job(
+                _run_agent,
+                trigger=CronTrigger(
+                    day_of_week="mon-fri",
+                    hour=h,
+                    minute=m,
+                    timezone=ET,
+                ),
+                id=f"{_AGENT_JOB_PREFIX}_{i}",
+                name=f"Agent cycle {t} ET",
+            )
+        logger.info(
+            "Agent schedule: fixed times %s ET (mon-fri)",
+            ", ".join(times),
+        )
+    else:
+        minutes = get_knob(
+            "agent_interval_minutes", settings.AGENT_INTERVAL_MINUTES
+        )
+        _scheduler.add_job(
+            _run_agent,
+            trigger=IntervalTrigger(minutes=minutes, jitter=30),
+            id=_AGENT_JOB_PREFIX,
+            name="Agent trading cycle",
+        )
+        logger.info("Agent schedule: every %d min", minutes)
+
+
 def start_scheduler() -> BackgroundScheduler:
     global _scheduler
     scheduler = BackgroundScheduler(timezone=ET)
-
-    scheduler.add_job(
-        _run_agent,
-        trigger=IntervalTrigger(
-            minutes=settings.AGENT_INTERVAL_MINUTES, jitter=30
-        ),
-        id="agent_cycle",
-        name="Agent trading cycle",
-        replace_existing=True,
-    )
+    # Assign early so reschedule_agent() can add the agent job below
+    _scheduler = scheduler
 
     scheduler.add_job(
         _process_approved_trades,
@@ -412,12 +460,9 @@ def start_scheduler() -> BackgroundScheduler:
         replace_existing=True,
     )
 
+    reschedule_agent()
     scheduler.start()
-    _scheduler = scheduler
-    logger.info(
-        "Scheduler started: agent every %d min",
-        settings.AGENT_INTERVAL_MINUTES,
-    )
+    logger.info("Scheduler started")
     return scheduler
 
 

@@ -78,9 +78,10 @@ async function loadCyclePulse() {
     return;
   }
 
+  const schedLabel = d.schedule_label || 'every 15 min';
   const meta = d.finished_at
-    ? `<div class="agent-meta">Last scan ${timeAgo(d.finished_at)} ago · every 15 min · ${thoughts.length} observations</div>`
-    : `<div class="agent-meta">Waiting for first cycle… · ${thoughts.length} observations</div>`;
+    ? `<div class="agent-meta">Last scan ${timeAgo(d.finished_at)} ago · ${schedLabel} · ${thoughts.length} observations</div>`
+    : `<div class="agent-meta">Waiting for first cycle… · ${schedLabel} · ${thoughts.length} observations</div>`;
 
   const items = thoughts.map((t, i) => {
     const sev = t.severity || 'info';
@@ -821,6 +822,8 @@ async function loadKnobs() {
     syncSeg('seg-day', knobs.report_weekly_day);
     syncSeg('seg-delivery', knobs.report_delivery);
     syncSeg('seg-depth', knobs.report_depth);
+    // Settings page — agent cycle card (no-op on other pages)
+    if (typeof initScheduleCard === 'function') initScheduleCard(knobs);
   } catch (e) { console.error('loadKnobs:', e); }
 }
 

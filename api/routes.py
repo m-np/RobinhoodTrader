@@ -275,6 +275,15 @@ async def api_cycle_status(db: Session = Depends(get_db)):
         }
         for a in rows
     ]
+    # Build a human-readable schedule label from current knobs
+    mode = get_knob("agent_schedule_mode", "interval")
+    if mode == "fixed":
+        times_raw = get_knob("agent_schedule_times", "09:30,12:00,15:30")
+        times = [t.strip() for t in times_raw.split(",") if t.strip()] or ["09:30", "12:00", "15:30"]
+        state["schedule_label"] = "fixed · " + " / ".join(times) + " ET"
+    else:
+        minutes = get_knob("agent_interval_minutes", 15)
+        state["schedule_label"] = f"every {minutes} min"
     return state
 
 
@@ -721,9 +730,19 @@ async def api_knobs(db: Session = Depends(get_db)):
     return {r.key: json.loads(r.value) for r in rows}
 
 
+_SCHEDULE_KNOBS = {
+    "agent_schedule_mode",
+    "agent_interval_minutes",
+    "agent_schedule_times",
+}
+
+
 @router.post("/api/knobs")
 async def update_knob(body: KnobUpdate):
     set_knob(body.key, body.value)
+    if body.key in _SCHEDULE_KNOBS:
+        from agent.scheduler import reschedule_agent
+        reschedule_agent()
     return {"status": "updated", "key": body.key}
 
 

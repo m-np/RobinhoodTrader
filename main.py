@@ -55,6 +55,10 @@ DEFAULT_KNOBS = {
     "notify_email": "",
     "notify_phone": "",
     "discover_enabled": True,
+    # Agent cycle scheduling
+    "agent_schedule_mode": "interval",   # "interval" | "fixed"
+    "agent_interval_minutes": 15,
+    "agent_schedule_times": "09:30,12:00,15:30",
 }
 
 MIRROR_SEEDS = [

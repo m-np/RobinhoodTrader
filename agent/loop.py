@@ -46,23 +46,48 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
         }
     ]
 
+    # System prompt as a cacheable block — cache hits cost $0.30/MTok vs
+    # $3.00/MTok, saving ~80% on the largest input component per iteration.
+    # TTL is 5 min; within a cycle (4-6 iterations in ~2 min) all but the
+    # first iteration are cache reads.
+    cached_system = [
+        {
+            "type": "text",
+            "text": build_system_prompt(context["knobs"]),
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    # Mark the last tool as a cache boundary so tool definitions are also cached.
+    tools = _agent_tools()
+    tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
+
     create_kwargs = dict(
         model="claude-sonnet-4-6",
         max_tokens=8192,
-        system=build_system_prompt(context["knobs"]),
-        tools=_agent_tools(),
+        system=cached_system,
+        tools=tools,
         messages=messages,
+        extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
     )
 
     logger.info("Starting Claude agent cycle")
 
-    max_iterations = 10
+    max_iterations = 5
     for iteration in range(max_iterations):
         # First call: force a tool use so Claude doesn't spend all tokens on text.
         # Subsequent calls: auto so Claude can end naturally after finishing work.
         create_kwargs["tool_choice"] = {"type": "any"} if iteration == 0 else {"type": "auto"}
 
         response = _call_claude_with_retry(client, create_kwargs)
+
+        usage = response.usage
+        cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+        if cache_write or cache_read:
+            logger.debug(
+                "Iter %d — cache write: %d tok, cache read: %d tok",
+                iteration, cache_write, cache_read,
+            )
 
         messages.append({"role": "assistant", "content": response.content})
         create_kwargs["messages"] = messages
@@ -560,9 +585,11 @@ def _agent_tools() -> list:
             "name": "read_journal",
             "description": (
                 "Read all journal entries for a ticker, newest first. "
-                "Call before every trade to read the full thesis, prior observations, "
-                "and sentiment history. journal_status in context has a summary; "
-                "call this for the full text of each entry."
+                "PRE-FILTER REQUIRED: only call this when journal_status in context "
+                "shows thesis_score >= 6, sentiment is strengthening or neutral, "
+                "AND at least one entry signal from stocks.md is firing for that ticker. "
+                "Do not call read_journal for broad watchlist scanning — "
+                "journal_status already has thesis_score and sentiment for every ticker."
             ),
             "input_schema": {
                 "type": "object",
@@ -575,11 +602,11 @@ def _agent_tools() -> list:
         {
             "name": "write_journal",
             "description": (
-                "Write a journal entry for a ticker. Use for every observation, "
-                "entry, exit, and thesis update. Every cycle must end with an "
-                "observation entry for each open position and each watchlist ticker "
-                "that was actively evaluated. These entries drive the thesis score "
-                "used in conviction sizing."
+                "Write a journal entry for a ticker. Use for: entries/exits, "
+                "thesis updates, and observations on open positions or tickers "
+                "where a signal fired this cycle. Do not write boilerplate "
+                "'no change' entries for watchlist tickers with no signal — "
+                "only write when there is something meaningful to record."
             ),
             "input_schema": {
                 "type": "object",
