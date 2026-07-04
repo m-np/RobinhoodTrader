@@ -17,7 +17,7 @@ from db.session import SessionLocal
 logger = logging.getLogger(__name__)
 
 
-def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None) -> None:
+def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None) -> dict | None:
     if mcp_client is None:
         mcp_client = RobinhoodMCPClient()
 
@@ -28,21 +28,29 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
             logger.info("Agent cycle skipped: Robinhood not connected")
         else:
             logger.info("Agent cycle skipped: wallet not funded")
-        return
+        return None
 
     context = _build_context(mcp_client)
     portfolio = context["portfolio"]
 
     client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
+    # Cache the initial context block: iters 2-5 pay $0.30/MTok cache-read
+    # instead of $3.00/MTok to re-send the full context JSON each iteration.
     messages = [
         {
             "role": "user",
-            "content": (
-                "Please review the current portfolio and market conditions, "
-                "then decide if any trades should be made.\n\n"
-                f"Context:\n{json.dumps(context, indent=2, default=str)}"
-            ),
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "Please review the current portfolio and market conditions, "
+                        "then decide if any trades should be made.\n\n"
+                        f"Context:\n{json.dumps(context, default=str)}"
+                    ),
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
         }
     ]
 
@@ -72,6 +80,10 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
 
     logger.info("Starting Claude agent cycle")
 
+    # Accumulate token usage across all iterations for cost monitoring.
+    total_input = total_output = total_cache_write = total_cache_read = 0
+    iterations_run = 0
+
     max_iterations = 5
     for iteration in range(max_iterations):
         # First call: force a tool use so Claude doesn't spend all tokens on text.
@@ -79,15 +91,23 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
         create_kwargs["tool_choice"] = {"type": "any"} if iteration == 0 else {"type": "auto"}
 
         response = _call_claude_with_retry(client, create_kwargs)
+        iterations_run = iteration + 1
 
         usage = response.usage
+        iter_input = getattr(usage, "input_tokens", 0) or 0
+        iter_output = getattr(usage, "output_tokens", 0) or 0
         cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
         cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
-        if cache_write or cache_read:
-            logger.debug(
-                "Iter %d — cache write: %d tok, cache read: %d tok",
-                iteration, cache_write, cache_read,
-            )
+
+        total_input += iter_input
+        total_output += iter_output
+        total_cache_write += cache_write
+        total_cache_read += cache_read
+
+        logger.debug(
+            "Iter %d — in: %d, out: %d, cache_write: %d, cache_read: %d",
+            iteration, iter_input, iter_output, cache_write, cache_read,
+        )
 
         messages.append({"role": "assistant", "content": response.content})
         create_kwargs["messages"] = messages
@@ -114,7 +134,28 @@ def run_agent_cycle(mcp_client: RobinhoodMCPClient | None = None, notifier=None)
         if iteration == max_iterations - 1:
             logger.warning("Agent cycle hit max iterations (%d) — terminating", max_iterations)
 
-    logger.info("Agent cycle complete")
+    # claude-sonnet-4-6 pricing (per million tokens)
+    estimated_cost = (
+        total_input * 3.00 / 1_000_000
+        + total_output * 15.00 / 1_000_000
+        + total_cache_write * 3.75 / 1_000_000
+        + total_cache_read * 0.30 / 1_000_000
+    )
+    logger.info(
+        "Agent cycle complete — %d iter | in: %d, out: %d, "
+        "cache_write: %d, cache_read: %d | est. $%.4f",
+        iterations_run, total_input, total_output,
+        total_cache_write, total_cache_read, estimated_cost,
+    )
+
+    return {
+        "iterations": iterations_run,
+        "input_tokens": total_input,
+        "output_tokens": total_output,
+        "cache_write_tokens": total_cache_write,
+        "cache_read_tokens": total_cache_read,
+        "estimated_cost_usd": round(estimated_cost, 6),
+    }
 
 
 def _call_claude_with_retry(client: anthropic.Anthropic, kwargs: dict, max_retries: int = 3):
@@ -381,7 +422,7 @@ def _handle_tool_call(
         return _place_order(inputs, mcp_client, portfolio, notifier)
     if name == "read_journal":
         from brain.journal_store import read_journal as _rj  # noqa: PLC0415
-        return {"entries": _rj(inputs["ticker"])}
+        return {"entries": _rj(inputs["ticker"], limit=5)}
     if name == "write_journal":
         from brain.journal_store import write_entry as _we  # noqa: PLC0415
         entry_id = _we(
@@ -584,12 +625,13 @@ def _agent_tools() -> list:
         {
             "name": "read_journal",
             "description": (
-                "Read all journal entries for a ticker, newest first. "
+                "Read the 10 most recent journal entries for a ticker, newest first. "
                 "PRE-FILTER REQUIRED: only call this when journal_status in context "
                 "shows thesis_score >= 6, sentiment is strengthening or neutral, "
                 "AND at least one entry signal from stocks.md is firing for that ticker. "
                 "Do not call read_journal for broad watchlist scanning — "
-                "journal_status already has thesis_score and sentiment for every ticker."
+                "journal_status already has thesis_score and sentiment for every ticker. "
+                "Limit calls to tickers where you intend to act this cycle."
             ),
             "input_schema": {
                 "type": "object",

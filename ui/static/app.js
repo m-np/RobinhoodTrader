@@ -5,6 +5,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   setInterval(loadPortfolio, 15000);  // holdings + P&L: 15 s (3 MCP calls)
   loadCyclePulse();
   setInterval(loadCyclePulse, 30000);
+  loadCostCard();
+  setInterval(loadCostCard, 60000);
 });
 
 async function loadAll() {
@@ -18,6 +20,7 @@ async function loadAll() {
     loadMirrors(),
     loadKnobs(),
     loadCyclePulse(),
+    loadCostCard(),
   ]);
 }
 
@@ -99,6 +102,116 @@ async function loadCyclePulse() {
   }).join('');
 
   card.innerHTML = meta + items;
+}
+
+// Token cost monitor card
+// AI cost card state
+let _costMonths = [];
+let _costCycles = [];
+let _costMonthIdx = 0;
+
+async function loadCostCard() {
+  const card = document.getElementById('cost-card');
+  if (!card) return;
+  try {
+    const [mRes, cRes] = await Promise.all([
+      fetch('/api/agent/cycle_stats/monthly'),
+      fetch('/api/agent/cycle_stats'),
+    ]);
+    if (!mRes.ok || !cRes.ok) { card.innerHTML = '<p style="color:var(--text-3);font-size:12px">Unavailable</p>'; return; }
+    _costMonths = await mRes.json();
+    _costCycles = await cRes.json();
+  } catch (e) {
+    card.innerHTML = '<p style="color:var(--text-3);font-size:12px">Unavailable</p>';
+    return;
+  }
+  if (!_costMonths.length) {
+    card.innerHTML = '<p style="color:var(--text-3);font-size:12px">No cycles recorded yet.</p>';
+    return;
+  }
+  _costMonthIdx = Math.min(_costMonthIdx, _costMonths.length - 1);
+  _renderCostCard();
+}
+
+function costNavMonth(dir) {
+  _costMonthIdx = Math.max(0, Math.min(_costMonths.length - 1, _costMonthIdx + dir));
+  _renderCostCard();
+}
+
+function _renderCostCard() {
+  const card = document.getElementById('cost-card');
+  const chip = document.getElementById('cost-month-chip');
+  if (!card || !_costMonths.length) return;
+
+  const m = _costMonths[_costMonthIdx];
+  const isCurrentMonth = _costMonthIdx === 0;
+  const monthLabel = new Date(m.month + '-02').toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+
+  if (chip) chip.textContent = `$${m.total_cost.toFixed(2)} ${isCurrentMonth ? 'this mo' : monthLabel}`;
+
+  const btnStyle = 'background:none;border:none;color:var(--text-3);cursor:pointer;font-size:16px;padding:0 4px;line-height:1';
+  const btnDisabled = 'opacity:0.25;cursor:default';
+  const canOlder = _costMonthIdx < _costMonths.length - 1;
+  const canNewer = _costMonthIdx > 0;
+
+  // Month navigator
+  const nav = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+    <button style="${btnStyle}${canOlder ? '' : ';' + btnDisabled}" onclick="costNavMonth(1)" ${canOlder ? '' : 'disabled'}>‹</button>
+    <span style="font-size:12px;font-weight:600;color:var(--text-1)">${isCurrentMonth ? 'This month' : monthLabel}</span>
+    <button style="${btnStyle}${canNewer ? '' : ';' + btnDisabled}" onclick="costNavMonth(-1)" ${canNewer ? '' : 'disabled'}>›</button>
+  </div>`;
+
+  // Monthly total
+  const projLabel = isCurrentMonth ? _monthProjection(m) : '';
+  const summary = `<div style="text-align:center;padding:6px 0 10px">
+    <div style="font-size:26px;font-weight:700;color:var(--text-1)">$${m.total_cost.toFixed(2)}</div>
+    <div style="font-size:11px;color:var(--text-3);margin-top:2px">${m.cycles} cycles · avg $${m.avg_cost_per_cycle.toFixed(3)}/cycle</div>
+    ${projLabel ? `<div style="font-size:10px;color:var(--text-3);margin-top:2px">${projLabel}</div>` : ''}
+  </div>`;
+
+  // Slider track across all months (visual bar)
+  const allTotal = _costMonths.reduce((s, x) => s + x.total_cost, 0);
+  const sliderBars = _costMonths.slice().reverse().map((x, i) => {
+    const pct = allTotal > 0 ? (x.total_cost / allTotal * 100).toFixed(1) : 0;
+    const isActive = (_costMonths.length - 1 - i) === _costMonthIdx;
+    const mo = new Date(x.month + '-02').toLocaleDateString('en-US', { month: 'short' });
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="costNavMonth(${_costMonths.length - 1 - i - _costMonthIdx})">
+      <div style="width:100%;height:28px;display:flex;align-items:flex-end">
+        <div style="width:100%;height:${Math.max(4, pct)}%;background:${isActive ? 'var(--accent)' : 'var(--border)'};border-radius:2px 2px 0 0;transition:height 0.2s"></div>
+      </div>
+      <div style="font-size:9px;color:${isActive ? 'var(--text-1)' : 'var(--text-3)'};font-weight:${isActive ? '600' : '400'}">${mo}</div>
+    </div>`;
+  }).join('');
+
+  const slider = _costMonths.length > 1 ? `<div style="display:flex;gap:3px;margin-bottom:10px;align-items:flex-end;height:44px">${sliderBars}</div>` : '';
+
+  // Last cycle in this month
+  const monthCycles = _costCycles.filter(r => r.started_at && r.started_at.startsWith(m.month));
+  const last = monthCycles[0];
+  const lastBlock = last ? (() => {
+    const cacheHitPct = (last.input_tokens + last.cache_read_tokens) > 0
+      ? Math.round(last.cache_read_tokens / (last.input_tokens + last.cache_read_tokens) * 100) : 0;
+    return `<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:2px">
+      <div style="font-size:10px;font-weight:600;color:var(--text-3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Last cycle</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;font-size:11px;color:var(--text-3)">
+        <span>Iterations</span><span style="color:var(--text-1);text-align:right">${last.iterations}</span>
+        <span>Input tok</span><span style="color:var(--text-1);text-align:right">${last.input_tokens.toLocaleString()}</span>
+        <span>Cache hit</span><span style="color:var(--text-1);text-align:right">${cacheHitPct}%</span>
+        <span style="font-weight:600;color:var(--text-2)">Cost</span>
+        <span style="font-weight:600;color:var(--text-1);text-align:right">$${last.estimated_cost_usd.toFixed(4)}</span>
+      </div>
+    </div>`;
+  })() : '';
+
+  card.innerHTML = nav + summary + slider + lastBlock;
+}
+
+function _monthProjection(m) {
+  const now = new Date();
+  const dayOfMonth = now.getUTCDate();
+  const daysInMonth = new Date(now.getUTCFullYear(), now.getUTCMonth() + 1, 0).getDate();
+  const projected = m.total_cost / dayOfMonth * daysInMonth;
+  return `projected $${projected.toFixed(2)} by month-end`;
 }
 
 function toggleThought(i) {

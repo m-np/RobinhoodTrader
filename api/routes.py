@@ -287,6 +287,65 @@ async def api_cycle_status(db: Session = Depends(get_db)):
     return state
 
 
+@router.get("/api/agent/cycle_stats")
+async def api_cycle_stats(db: Session = Depends(get_db)):
+    """Last 20 completed cycle token/cost records."""
+    from db.models import CycleStat
+    rows = (
+        db.query(CycleStat)
+        .order_by(CycleStat.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    return [
+        {
+            "started_at": r.started_at.isoformat() if r.started_at else None,
+            "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+            "iterations": r.iterations,
+            "input_tokens": r.input_tokens,
+            "output_tokens": r.output_tokens,
+            "cache_write_tokens": r.cache_write_tokens,
+            "cache_read_tokens": r.cache_read_tokens,
+            "estimated_cost_usd": r.estimated_cost_usd,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/api/agent/cycle_stats/monthly")
+async def api_cycle_stats_monthly(db: Session = Depends(get_db)):
+    """Monthly aggregated cycle costs, newest month first, up to 13 months."""
+    from db.models import CycleStat
+    from sqlalchemy import func, text
+    month_expr = func.to_char(CycleStat.created_at, text("'YYYY-MM'"))
+    rows = (
+        db.query(
+            month_expr.label("month"),
+            func.count(CycleStat.id).label("cycles"),
+            func.sum(CycleStat.estimated_cost_usd).label("total_cost"),
+            func.sum(CycleStat.input_tokens).label("total_input"),
+            func.sum(CycleStat.output_tokens).label("total_output"),
+            func.sum(CycleStat.cache_read_tokens).label("total_cache_read"),
+        )
+        .group_by(month_expr)
+        .order_by(month_expr.desc())
+        .limit(13)
+        .all()
+    )
+    return [
+        {
+            "month": r.month,
+            "cycles": r.cycles,
+            "total_cost": round(r.total_cost or 0, 4),
+            "avg_cost_per_cycle": round((r.total_cost or 0) / r.cycles, 4) if r.cycles else 0,
+            "total_input_tokens": int(r.total_input or 0),
+            "total_output_tokens": int(r.total_output or 0),
+            "total_cache_read_tokens": int(r.total_cache_read or 0),
+        }
+        for r in rows
+    ]
+
+
 @router.get("/api/portfolio")
 async def api_portfolio(db: Session = Depends(get_db)):
     mcp = _get_mcp()

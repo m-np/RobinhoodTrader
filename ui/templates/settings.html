@@ -539,8 +539,8 @@ function updateCostEstimate() {
     cyclesPerDay = Math.floor(390 / mins); // 6.5 market hours
   }
 
-  // ~$0.35/cycle — measured (5 iterations, 8k token system prompt, tool results)
-  const costPerCycle = 0.35;
+  // ~$0.50/cycle — measured (5 iter, 8k system prompt, journal reads capped at 10 entries)
+  const costPerCycle = 0.50;
   const perDay   = cyclesPerDay * costPerCycle;
   const perMonth = cyclesPerDay * 22 * costPerCycle;
 

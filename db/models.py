@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Float, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -136,6 +136,23 @@ class StockDiscovery(Base):
     source_summary = Column(String, nullable=True)  # brief label of what data surfaced this
     dismissed = Column(Boolean, default=False, nullable=False)
     added_to_watchlist = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=_now, nullable=False)
+
+
+class CycleStat(Base):
+    """One row per completed agent cycle — token usage and estimated cost."""
+
+    __tablename__ = "cycle_stats"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    iterations = Column(Integer, nullable=False, default=0)
+    input_tokens = Column(Integer, nullable=False, default=0)
+    output_tokens = Column(Integer, nullable=False, default=0)
+    cache_write_tokens = Column(Integer, nullable=False, default=0)
+    cache_read_tokens = Column(Integer, nullable=False, default=0)
+    estimated_cost_usd = Column(Float, nullable=False, default=0.0)
     created_at = Column(DateTime, default=_now, nullable=False)
 
 

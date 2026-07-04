@@ -126,22 +126,25 @@ def write_entry(
         return cur.lastrowid or 0
 
 
-def read_journal(ticker: str, db_path: str = _DEFAULT_DB) -> list[dict]:
-    """Return all journal entries for a ticker, newest first.
+def read_journal(ticker: str, db_path: str = _DEFAULT_DB, limit: int = 0) -> list[dict]:
+    """Return journal entries for a ticker, newest first.
 
     Args:
         ticker:  Equity symbol.
         db_path: Path to the SQLite database.
+        limit:   Max entries to return (0 = all).
 
     Returns:
         List of row dicts with keys: id, ticker, entry_type, sentiment, text, tier, created_at.
     """
     with _connect(db_path) as conn:
-        rows = conn.execute(
+        sql = (
             "SELECT id, ticker, entry_type, sentiment, text, tier, created_at "
-            "FROM journal_entries WHERE ticker = ? ORDER BY id DESC",
-            (ticker.upper(),),
-        ).fetchall()
+            "FROM journal_entries WHERE ticker = ? ORDER BY id DESC"
+        )
+        if limit > 0:
+            sql += f" LIMIT {limit}"
+        rows = conn.execute(sql, (ticker.upper(),)).fetchall()
     return [dict(r) for r in rows]
 
 

@@ -1,6 +1,6 @@
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -54,13 +54,18 @@ def _get_mcp() -> RobinhoodMCPClient:
 
 def _run_agent():
     global _cycle_state
+    started = datetime.utcnow()
     _cycle_state["status"] = "running"
-    _cycle_state["started_at"] = datetime.utcnow().isoformat()
+    _cycle_state["started_at"] = started.isoformat()
     _cycle_state["error"] = None
     try:
         mcp = _get_mcp()
-        run_agent_cycle(mcp_client=mcp)
+        stats = run_agent_cycle(mcp_client=mcp)
         _save_portfolio_snapshot(mcp)
+        finished = datetime.utcnow()
+        if stats:
+            _save_cycle_stat(stats, started, finished)
+            _cycle_state["last_stat"] = stats
         _cycle_state["status"] = "idle"
     except Exception as e:
         _cycle_state["status"] = "error"
@@ -68,6 +73,32 @@ def _run_agent():
         logger.exception("Agent cycle error: %s", e)
     finally:
         _cycle_state["finished_at"] = datetime.utcnow().isoformat()
+
+
+def _save_cycle_stat(stats: dict, started: datetime, finished: datetime) -> None:
+    try:
+        import uuid as _uuid
+        from db.models import CycleStat
+        from db.session import SessionLocal
+        db = SessionLocal()
+        try:
+            db.add(CycleStat(
+                id=str(_uuid.uuid4()),
+                started_at=started,
+                finished_at=finished,
+                iterations=stats.get("iterations", 0),
+                input_tokens=stats.get("input_tokens", 0),
+                output_tokens=stats.get("output_tokens", 0),
+                cache_write_tokens=stats.get("cache_write_tokens", 0),
+                cache_read_tokens=stats.get("cache_read_tokens", 0),
+                estimated_cost_usd=stats.get("estimated_cost_usd", 0.0),
+                created_at=finished,
+            ))
+            db.commit()
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("Failed to save cycle stat: %s", e)
 
 
 def _save_portfolio_snapshot(mcp: RobinhoodMCPClient) -> None:
@@ -309,6 +340,69 @@ def _run_weekly_report():
             logger.exception("Weekly report error: %s", e)
 
 
+def _run_monthly_report():
+    try:
+        generate_report(report_type="monthly")
+    except Exception as e:
+        logger.exception("Monthly report error: %s", e)
+
+
+def _check_missed_monthly_report() -> None:
+    """Run on startup: generate last month's report if the app was offline on the 1st."""
+    from db.models import CycleStat, Report
+    from db.session import SessionLocal
+
+    now = datetime.now(ET)
+    first_of_this_month = now.replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    prev_month_end = first_of_this_month - timedelta(seconds=1)
+    prev_month_start = prev_month_end.replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    # DB stores naive UTC — convert ET bounds to UTC for queries
+    utc_start = prev_month_start.astimezone(pytz.utc).replace(tzinfo=None)
+    utc_end = prev_month_end.astimezone(pytz.utc).replace(tzinfo=None)
+    month_label = prev_month_start.strftime("%B %Y")
+
+    db = SessionLocal()
+    try:
+        existing = (
+            db.query(Report)
+            .filter(
+                Report.report_type == "monthly",
+                Report.created_at >= utc_start,
+                Report.created_at <= utc_end,
+            )
+            .first()
+        )
+        if existing:
+            logger.debug("Monthly report for %s already exists", month_label)
+            return
+
+        has_data = (
+            db.query(CycleStat)
+            .filter(
+                CycleStat.created_at >= utc_start,
+                CycleStat.created_at <= utc_end,
+            )
+            .first()
+        )
+        if not has_data:
+            logger.debug("No cycle data for %s — skipping backfill", month_label)
+            return
+    finally:
+        db.close()
+
+    logger.info("Monthly report for %s missed — generating on startup", month_label)
+
+    logger.info(
+        "Monthly report for %s was missed — generating on startup",
+        prev_month_start.strftime("%B %Y"),
+    )
+    _run_monthly_report()
+
+
 def _run_discovery():
     try:
         check_and_run_discovery(_get_mcp())
@@ -451,6 +545,14 @@ def start_scheduler() -> BackgroundScheduler:
     )
 
     scheduler.add_job(
+        _run_monthly_report,
+        trigger=CronTrigger(day=1, hour=8, minute=0, timezone=ET),
+        id="monthly_report",
+        name="Monthly portfolio + AI cost report",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
         _run_discovery,
         trigger=CronTrigger(
             day_of_week="mon-fri", hour=9, minute=35, timezone=ET,
@@ -463,6 +565,10 @@ def start_scheduler() -> BackgroundScheduler:
     reschedule_agent()
     scheduler.start()
     logger.info("Scheduler started")
+
+    # Backfill any missed monthly report before starting normal operations
+    threading.Thread(target=_check_missed_monthly_report, daemon=True).start()
+
     return scheduler
 
 

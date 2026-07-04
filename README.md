@@ -408,55 +408,58 @@ Go to **Settings → Notification delivery**. Enter your email and/or phone numb
 | Institutional mirrors | 6 hr | Polls SEC EDGAR for new 13F filings |
 | Daily report | 4:05 PM ET | Claude writes a P&L + trade summary (if enabled) |
 | Weekly report | 4:05 PM ET | Claude writes a weekly summary (if enabled) |
+| Monthly report | 1st of month, 8 AM ET | Combined portfolio performance + AI cost report (always on) |
 
 ---
 
 ## Cost guide — AI spend vs account size
 
+> **Where to see live costs:** the **AI cost** card in the dashboard sidebar shows your monthly spend, a bar chart across months, and a breakdown of the last cycle. A combined portfolio + AI cost report is auto-generated on the 1st of every month.
+
 The agent brain calls Claude on every cycle. Understanding the cost helps you pick the right schedule.
 
 ### Token breakdown per cycle
 
-| Component | Tokens (5 iterations) |
-|---|---|
-| System prompt (7 skill files, ~8,100 tokens, cached after iter 1) | ~8,100 × 1 write + ~8,100 × 4 reads |
-| Tool definitions (5 tools, ~700 tokens, cached after iter 1) | ~700 × 1 write + ~700 × 4 reads |
-| Context JSON (portfolio, watchlist quotes, journal status) | ~5,500 |
-| Accumulated conversation + tool results (grows each iteration) | ~5,000–15,000 total |
-| Output (trade rationale, journal entries, cycle summary) | ~4,000 |
-| **Typical total** | **~55,000 input · ~4,000 output** |
+| Component | Tokens | Billed at |
+|---|---|---|
+| System prompt (~8,100 tok) + tool defs (~700 tok) | ~8,800 × 1 write + ~8,800 × 3 reads | Cache write / cache read |
+| Initial context JSON (portfolio, watchlist, journal status, ~7,000 tok) | ~7,000 × 1 write + ~7,000 × 3 reads | Cache write / cache read |
+| Tool results accumulating across iterations (journal reads, order results) | ~10,000–30,000 total | Full input |
+| Output (analysis, journal entries, trade rationale) | ~4,000 | Output |
 
 **claude-sonnet-4-6 pricing:** $3.00/MTok input · $15.00/MTok output · $3.75/MTok cache write · $0.30/MTok cache read
 
 ### Active optimisations
 
-**1. Prompt caching** (`agent/loop.py`) — system prompt and tool definitions carry `cache_control: ephemeral`. Iteration 1 pays the cache write rate ($3.75/MTok); iterations 2–5 pay the cache read rate ($0.30/MTok — 10× cheaper). The static ~8,800 tokens are cached; the growing conversation (tool results fed back each iteration) is not.
+**1. Prompt caching** (`agent/loop.py`) — system prompt, tool definitions, and the initial context JSON all carry `cache_control: ephemeral`. Iteration 1 writes these to cache (~16K tokens); subsequent iterations pay the cache read rate ($0.30/MTok — 10× cheaper than full input).
 
-**2. read_journal gate** (`agent/loop.py` + `brain/skills/base.md`) — Claude only calls `read_journal` when `journal_status` shows `thesis_score ≥ 6`, sentiment is `strengthening`/`neutral`, AND a signal is firing. Prevents speculative reads on quiet tickers.
+**2. Journal entry limit** (`agent/loop.py`) — `read_journal` returns only the 5 most recent entries per ticker (was unlimited). A full journal for an active ticker had 24–25 entries (~10K tokens each); capping at 5 drops this to ~2K tokens. Since these tool results accumulate across iterations, smaller reads have compounding impact.
 
-**3. Max iterations = 5** (`agent/loop.py`) — caps each cycle at 5 tool-use rounds. Reduces worst-case token accumulation by ~50% compared to an uncapped loop.
+**3. read_journal gate** (`agent/loop.py`) — Claude only calls `read_journal` when `journal_status` shows `thesis_score ≥ 6`, sentiment is `strengthening`/`neutral`, AND a signal is firing. Prevents speculative reads on quiet tickers.
+
+**4. Max iterations = 5** (`agent/loop.py`) — caps each cycle at 5 tool-use rounds. In practice most cycles finish in 3–4 iterations (1 journal read + 1 action + 1 journal write + end turn).
 
 ### Measured per-cycle cost
 
 | Component | Cost |
 |---|---|
-| System + tools cache write (iter 1) | ~$0.033 |
-| System + tools cache reads (iters 2–5) | ~$0.011 |
-| Growing conversation + context (non-cached) | ~$0.090–$0.180 |
-| Output tokens | ~$0.060 |
-| **Typical cycle** | **~$0.35** |
+| Cache write (system + tools + context, iter 1) | ~$0.111 |
+| Cache reads (iters 2–4) | ~$0.016 |
+| Non-cached input (tool results accumulating) | ~$0.143 |
+| Output tokens | ~$0.063 |
+| **Typical cycle** | **~$0.33** |
 
-> **How this was measured:** a single triggered run on a live portfolio (PLTR + AVGO open, SPY/QQQ on watchlist) cost $0.77 with the old `max_iterations = 10`. Halving to 5 iterations brings it to the ~$0.35 range. Quiet cycles (nothing to trade, short response) cost less; busy cycles with multiple journal reads and trade rationale cost more.
+> **How this was measured:** live runs on a real portfolio (31-ticker watchlist, 2 open positions). Before optimisations: $1.22/cycle (369K non-cached input tokens — full journal histories carried through every iteration). After capping journal reads at 5 entries and caching the initial context: $0.33/cycle (47K non-cached input tokens). An 87% reduction in non-cached input.
 
 ### Cost by schedule
 
 | Schedule | Cycles/month* | Cost/month |
 |---|---|---|
-| Every 15 min (24/7) | ~2,880 | **~$1,000** |
-| Every 15 min (market hours only†) | 572 | **~$200** |
-| Every 30 min (market hours) | 286 | **~$100** |
-| Fixed 3× (open/midday/close) | 66 | **~$23** |
-| Fixed 1× (open only) | 22 | **~$8** |
+| Every 15 min (24/7) | ~2,880 | **~$950** |
+| Every 15 min (market hours only†) | 572 | **~$190** |
+| Every 30 min (market hours) | 286 | **~$95** |
+| Fixed 3× (open/midday/close) | 66 | **~$22** |
+| Fixed 1× (open only) | 22 | **~$7** |
 
 *Interval mode runs 24/7 — factor in overnight and weekend cycles.  
 †26 cycles/trading day × 22 days. Fixed-time mode runs Mon–Fri only and is the most cost-efficient option.
@@ -465,11 +468,11 @@ The agent brain calls Claude on every cycle. Understanding the cost helps you pi
 
 | Schedule | Monthly cost | Min account |
 |---|---|---|
-| Every 15 min (24/7) | ~$1,000 | $100,000 |
-| Every 15 min (market hours) | ~$200 | $20,000 |
-| Every 30 min (market hours) | ~$100 | $10,000 |
-| Fixed 3× | ~$23 | $2,300 |
-| Fixed 1× | ~$8 | $800 |
+| Every 15 min (24/7) | ~$950 | $95,000 |
+| Every 15 min (market hours) | ~$190 | $19,000 |
+| Every 30 min (market hours) | ~$95 | $9,500 |
+| Fixed 3× | ~$22 | $2,200 |
+| Fixed 1× | ~$7 | $700 |
 
 **Recommendation for accounts under $2,000:** use **Fixed 3×** (open, midday, pre-close). The agent's strategy is thesis-driven with multi-week hold periods — 3 scans/day catches every meaningful entry and exit window.
 
